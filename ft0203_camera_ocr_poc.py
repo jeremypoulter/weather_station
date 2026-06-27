@@ -207,6 +207,50 @@ def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[
     return x, y, w, h
 
 
+def parse_int_list(value: object, fallback: list[int]) -> list[int]:
+    if isinstance(value, list):
+        out: list[int] = []
+        for v in value:
+            out.append(int(v))
+        return out if out else fallback
+    if isinstance(value, str):
+        out = [int(p.strip(), 10) for p in value.split(",") if p.strip()]
+        return out if out else fallback
+    return fallback
+
+
+def parse_str_set(value: object) -> Optional[set[str]]:
+    if isinstance(value, list):
+        return {str(v).strip() for v in value if str(v).strip()}
+    if isinstance(value, str):
+        vals = {v.strip() for v in value.split(",") if v.strip()}
+        return vals if vals else None
+    return None
+
+
+def normalize_ocr_text(text: str, whitelist: str, post_regex: str = "") -> str:
+    t = (text or "").replace("\n", " ").replace("\r", " ").strip()
+    while "  " in t:
+        t = t.replace("  ", " ")
+    if whitelist:
+        allowed = set(whitelist)
+        t = "".join(ch for ch in t if ch in allowed or ch.isspace())
+        t = t.strip()
+    if post_regex:
+        import re
+
+        m = re.search(post_regex, t)
+        if m:
+            return m.group(0)
+        return ""
+    return t
+
+
+def roi_motion_score(current_gray, previous_gray) -> float:
+    diff = cv2.absdiff(current_gray, previous_gray)
+    return float(np.mean(diff))
+
+
 def preprocess_for_lcd(gray):
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(denoised)
@@ -443,6 +487,12 @@ def main() -> int:
         help="stop evaluating variants for a field once confidence reaches this value",
     )
     parser.add_argument(
+        "--motion-threshold",
+        type=float,
+        default=2.0,
+        help="skip field OCR when mean ROI pixel change is below this threshold",
+    )
+    parser.add_argument(
         "--debug-candidates",
         action="store_true",
         help="include top OCR candidates in output records",
@@ -508,6 +558,8 @@ def main() -> int:
                 args.variant_list = ",".join(str(x) for x in v)
             else:
                 args.variant_list = str(v)
+        if args.motion_threshold == 2.0 and "motion_threshold" in profile:
+            args.motion_threshold = float(profile["motion_threshold"])
         if (
             args.whitelist == "0123456789.-:%CFHhPaINOUTWm/s"
             and "whitelist" in profile
@@ -558,6 +610,9 @@ def main() -> int:
         return 2
     if not (0.0 <= args.early_conf <= 100.0):
         print("--early-conf must be in range 0-100", file=sys.stderr)
+        return 2
+    if args.motion_threshold < 0:
+        print("--motion-threshold must be >= 0", file=sys.stderr)
         return 2
 
     try:
@@ -677,6 +732,14 @@ def main() -> int:
         print(f"Perspective warp active: size={frame_w}x{frame_h}")
 
     field_rois: dict[str, tuple[int, int, int, int]] = {}
+    field_overrides: dict[str, dict[str, object]] = {}
+    if args.profile:
+        raw_overrides = profile.get("field_overrides", {})
+        if isinstance(raw_overrides, dict):
+            for k, v in raw_overrides.items():
+                if isinstance(v, dict):
+                    field_overrides[str(k)] = v
+
     for raw in args.field_roi:
         try:
             name, f_roi = parse_field_roi(raw)
@@ -738,6 +801,8 @@ def main() -> int:
         print("Capture disabled (no --capture). Printing live OCR to console only.")
 
     prev_text = ""
+    prev_field_result: dict[str, dict[str, object]] = {}
+    prev_field_gray: dict[str, object] = {}
     samples = 0
     last_tick = 0.0
     preview_disabled_due_to_error = False
@@ -775,22 +840,50 @@ def main() -> int:
             if field_rois:
                 for name, (fx, fy, fw, fh) in field_rois.items():
                     f_frame = frame[fy : fy + fh, fx : fx + fw]
+                    f_gray = cv2.cvtColor(f_frame, cv2.COLOR_BGR2GRAY)
+
+                    override = field_overrides.get(name, {})
+                    local_psm = parse_int_list(override.get("psm_list"), psm_values)
+                    local_whitelist = str(override.get("whitelist", args.whitelist))
+                    local_min_conf = float(override.get("min_conf", args.min_conf))
+                    local_scale = float(override.get("scale", args.scale))
+                    local_early = float(override.get("early_conf", args.early_conf))
+                    local_variants = parse_str_set(override.get("variant_list"))
+                    if local_variants is None:
+                        local_variants = variant_allowlist
+                    post_regex = str(override.get("post_regex", "")).strip()
+
+                    motion_score = None
+                    if name in prev_field_gray and args.motion_threshold > 0:
+                        motion_score = roi_motion_score(f_gray, prev_field_gray[name])
+                        if motion_score < args.motion_threshold and name in prev_field_result:
+                            cached = dict(prev_field_result[name])
+                            cached["motion_score"] = motion_score
+                            cached["skipped"] = True
+                            field_results[name] = cached
+                            continue
+
                     text, conf, source, candidates = select_best_ocr(
                         f_frame,
-                        psm_values=psm_values,
+                        psm_values=local_psm,
                         oem=args.oem,
-                        whitelist=args.whitelist,
-                        min_conf=args.min_conf,
-                        scale=args.scale,
-                        variant_allowlist=variant_allowlist,
-                        early_conf=args.early_conf,
+                        whitelist=local_whitelist,
+                        min_conf=local_min_conf,
+                        scale=local_scale,
+                        variant_allowlist=local_variants,
+                        early_conf=local_early,
                     )
+                    text = normalize_ocr_text(text, local_whitelist, post_regex=post_regex)
                     field_results[name] = {
                         "text": text,
                         "confidence": conf,
                         "source": source,
                         "roi": {"x": fx, "y": fy, "w": fw, "h": fh},
+                        "motion_score": motion_score,
+                        "skipped": False,
                     }
+                    prev_field_result[name] = dict(field_results[name])
+                    prev_field_gray[name] = f_gray
                     if args.debug_candidates and candidates:
                         all_candidates.extend(
                             {
@@ -859,7 +952,6 @@ def main() -> int:
                     overlay = frame.copy()
                     cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 200, 255), 2)
 
-                    panel_lines = []
                     for name, (fx, fy, fw, fh) in field_rois.items():
                         cv2.rectangle(overlay, (fx, fy), (fx + fw, fy + fh), (255, 180, 0), 2)
                         field_val = ""
@@ -886,39 +978,6 @@ def main() -> int:
                             1,
                             cv2.LINE_AA,
                         )
-                        if field_val:
-                            panel_lines.append(f"{name}: {field_val}")
-
-                    if panel_lines:
-                        panel_x = 10
-                        panel_y = 50
-                        panel_h = 22 + (len(panel_lines) * 20)
-                        panel_w = 320
-                        cv2.rectangle(
-                            overlay,
-                            (panel_x, panel_y),
-                            (panel_x + panel_w, panel_y + panel_h),
-                            (30, 30, 30),
-                            -1,
-                        )
-                        cv2.rectangle(
-                            overlay,
-                            (panel_x, panel_y),
-                            (panel_x + panel_w, panel_y + panel_h),
-                            (90, 180, 255),
-                            1,
-                        )
-                        for idx, line in enumerate(panel_lines):
-                            cv2.putText(
-                                overlay,
-                                line,
-                                (panel_x + 8, panel_y + 18 + (idx * 20)),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (240, 240, 240),
-                                1,
-                                cv2.LINE_AA,
-                            )
 
                     label = text if text else "<no text>"
                     if len(label) > 80:

@@ -7,6 +7,7 @@
   "oem": 3,
   "scale": 2.0,
   "early_conf": 80,
+  "motion_threshold": 1.5,
   "variant_list": [
     "gray",
     "otsu",
@@ -21,15 +22,53 @@
   "min_conf": 15,
   "whitelist": "0123456789.-:%",
   "field_rois": {
-    "out_temp": { "x": 28, "y": 34, "w": 148, "h": 92 },
-    "out_hum": { "x": 26, "y": 122, "w": 142, "h": 90 },
-    "wind_avg": { "x": 248, "y": 142, "w": 88, "h": 74 },
-    "wind_gust": { "x": 336, "y": 142, "w": 106, "h": 74 },
-    "feels_like": { "x": 534, "y": 28, "w": 100, "h": 96 },
-    "dew_point": { "x": 522, "y": 120, "w": 112, "h": 96 },
+    "out_temp": { "x": 28, "y": 34, "w": 175, "h": 92 },
+    "out_hum": { "x": 26, "y": 125, "w": 142, "h": 92 },
+    "wind_avg": { "x": 248, "y": 152, "w": 88, "h": 74 },
+    "wind_gust": { "x": 336, "y": 152, "w": 115, "h": 74 },
+    "feels_like": { "x": 524, "y": 28, "w": 110, "h": 100 },
+    "dew_point": { "x": 522, "y": 130, "w": 112, "h": 100 },
     "pressure": { "x": 22, "y": 232, "w": 202, "h": 84 },
-    "in_temp": { "x": 20, "y": 330, "w": 132, "h": 86 },
-    "in_hum": { "x": 152, "y": 332, "w": 104, "h": 82 },
-    "time": { "x": 20, "y": 420, "w": 176, "h": 56 }
+    "in_temp": { "x": 15, "y": 330, "w": 100, "h": 86 },
+    "in_hum": { "x": 120, "y": 332, "w": 100, "h": 82 },
+    "time": { "x": 20, "y": 420, "w": 200, "h": 56 }
+  },
+  "field_overrides": {
+    "out_temp": {
+      "whitelist": "0123456789.-",
+      "post_regex": "[0-9]{1,2}(\\.[0-9])?",
+      "variant_list": ["green_otsu", "green_otsu_inv", "blackhat_otsu"],
+      "early_conf": 70
+    },
+    "out_hum": {
+      "whitelist": "0123456789",
+      "post_regex": "[0-9]{1,2}",
+      "variant_list": ["green_otsu", "otsu"],
+      "early_conf": 70
+    },
+    "pressure": {
+      "whitelist": "0123456789.",
+      "post_regex": "[0-9]{3,5}(\\.[0-9])?",
+      "variant_list": ["green_otsu", "green_otsu_inv", "blackhat_otsu"],
+      "early_conf": 75
+    },
+    "in_temp": {
+      "whitelist": "0123456789.-",
+      "post_regex": "[0-9]{1,2}(\\.[0-9])?",
+      "variant_list": ["green_otsu", "blackhat_otsu"],
+      "early_conf": 70
+    },
+    "in_hum": {
+      "whitelist": "0123456789",
+      "post_regex": "[0-9]{1,2}",
+      "variant_list": ["green_otsu", "otsu"],
+      "early_conf": 70
+    },
+    "time": {
+      "whitelist": "0123456789:",
+      "post_regex": "[0-9]{1,2}:[0-9]{2}",
+      "variant_list": ["gray", "green_otsu", "otsu"],
+      "early_conf": 60
+    }
   }
 }
