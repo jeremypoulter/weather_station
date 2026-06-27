@@ -17,6 +17,8 @@ import sys
 import time
 from typing import Optional
 
+import numpy as np
+
 try:
     import cv2
 except ImportError:
@@ -65,6 +67,114 @@ def parse_field_roi(value: str) -> tuple[str, tuple[int, int, int, int]]:
         raise argparse.ArgumentTypeError("field ROI name cannot be empty")
     roi = parse_roi(roi_part)
     return name, roi
+
+
+def parse_corners(value: str) -> list[tuple[float, float]]:
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    if len(parts) != 8:
+        raise argparse.ArgumentTypeError("corners must be 8 numbers: x1,y1,x2,y2,x3,y3,x4,y4")
+    try:
+        nums = [float(p) for p in parts]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("corners values must be numeric") from exc
+    pts = [(nums[i], nums[i + 1]) for i in range(0, 8, 2)]
+    return order_corners(pts)
+
+
+def parse_size(value: str) -> tuple[int, int]:
+    parts = [p.strip() for p in value.lower().split("x") if p.strip()]
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("size must be WxH, e.g. 640x480")
+    try:
+        w = int(parts[0], 10)
+        h = int(parts[1], 10)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("size must use integers") from exc
+    if w <= 0 or h <= 0:
+        raise argparse.ArgumentTypeError("size dimensions must be > 0")
+    return w, h
+
+
+def order_corners(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if len(points) != 4:
+        raise ValueError("need exactly 4 points")
+    pts = np.array(points, dtype=np.float32)
+    s = pts.sum(axis=1)
+    diff = np.diff(pts, axis=1).reshape(-1)
+    tl = pts[np.argmin(s)]
+    br = pts[np.argmax(s)]
+    tr = pts[np.argmin(diff)]
+    bl = pts[np.argmax(diff)]
+    return [tuple(tl), tuple(tr), tuple(br), tuple(bl)]
+
+
+def select_four_corners(frame) -> Optional[list[tuple[float, float]]]:
+    win = "Select 4 Display Corners (TL, TR, BR, BL)"
+    pts: list[tuple[float, float]] = []
+    canvas = frame.copy()
+
+    def redraw() -> None:
+        nonlocal canvas
+        canvas = frame.copy()
+        for i, (px, py) in enumerate(pts):
+            cv2.circle(canvas, (int(px), int(py)), 5, (0, 200, 255), -1)
+            cv2.putText(
+                canvas,
+                str(i + 1),
+                (int(px) + 8, int(py) - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+        if len(pts) == 4:
+            poly = np.array([(int(x), int(y)) for x, y in pts], dtype=np.int32)
+            cv2.polylines(canvas, [poly], True, (255, 180, 0), 2)
+        cv2.putText(
+            canvas,
+            "Click 4 corners, ENTER to accept, c to cancel, r to reset",
+            (10, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    def on_mouse(event, x, y, _flags, _param) -> None:
+        if event == cv2.EVENT_LBUTTONDOWN and len(pts) < 4:
+            pts.append((float(x), float(y)))
+            redraw()
+
+    redraw()
+    cv2.namedWindow(win)
+    cv2.setMouseCallback(win, on_mouse)
+
+    while True:
+        cv2.imshow(win, canvas)
+        key = cv2.waitKey(20) & 0xFF
+        if key in (13, 10) and len(pts) == 4:
+            cv2.destroyWindow(win)
+            return order_corners(pts)
+        if key == ord("r"):
+            pts.clear()
+            redraw()
+        if key == ord("c"):
+            cv2.destroyWindow(win)
+            return None
+
+
+def warp_frame(frame, corners: list[tuple[float, float]], warp_size: tuple[int, int]):
+    w, h = warp_size
+    src = np.array(corners, dtype=np.float32)
+    dst = np.array(
+        [(0, 0), (w - 1, 0), (w - 1, h - 1), (0, h - 1)],
+        dtype=np.float32,
+    )
+    matrix = cv2.getPerspectiveTransform(src, dst)
+    warped = cv2.warpPerspective(frame, matrix, (w, h))
+    return warped
 
 
 def load_profile(path: str) -> dict[str, object]:
@@ -203,6 +313,8 @@ def select_best_ocr(
     whitelist: str,
     min_conf: float,
     scale: float,
+    variant_allowlist: Optional[set[str]] = None,
+    early_conf: Optional[float] = None,
 ):
     gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
     green = roi_img[:, :, 1]
@@ -214,6 +326,9 @@ def select_best_ocr(
     candidates: list[dict[str, object]] = []
 
     for variant_name, variant_img in variants.items():
+        base_variant_name = variant_name.split("_")[0]
+        if variant_allowlist is not None and base_variant_name not in variant_allowlist and variant_name not in variant_allowlist:
+            continue
         for psm in psm_values:
             text, conf = extract_text_and_confidence(
                 variant_img,
@@ -243,6 +358,9 @@ def select_best_ocr(
                 best_conf = conf
                 best_source = f"{variant_name}/psm{psm}"
 
+            if early_conf is not None and conf is not None and conf >= early_conf:
+                return best_text, best_conf, best_source, candidates
+
     return best_text, best_conf, best_source, candidates
 
 
@@ -250,6 +368,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Live camera OCR capture for FT-0203 display")
     parser.add_argument("--camera-index", type=int, default=0, help="camera index for OpenCV")
     parser.add_argument("--profile", default="", help="JSON profile path with camera/OCR defaults")
+    parser.add_argument(
+        "--corners",
+        type=parse_corners,
+        default=None,
+        help="display corners x1,y1,x2,y2,x3,y3,x4,y4",
+    )
+    parser.add_argument(
+        "--select-corners",
+        action="store_true",
+        help="interactively click 4 display corners to enable perspective warp",
+    )
+    parser.add_argument(
+        "--warp-size",
+        type=parse_size,
+        default=None,
+        help="warped panel size as WxH, e.g. 640x480",
+    )
     parser.add_argument("--width", type=int, default=0, help="requested camera width; 0 keeps default")
     parser.add_argument("--height", type=int, default=0, help="requested camera height; 0 keeps default")
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between OCR samples")
@@ -290,6 +425,18 @@ def main() -> int:
     )
     parser.add_argument("--min-conf", type=float, default=15.0, help="minimum confidence (0-100) for tokens")
     parser.add_argument("--scale", type=float, default=3.0, help="upscale factor for OCR variants")
+    parser.add_argument("--fast", action="store_true", help="use faster OCR path with fewer variants")
+    parser.add_argument(
+        "--variant-list",
+        default="",
+        help="comma-separated OCR variant allowlist (advanced)",
+    )
+    parser.add_argument(
+        "--early-conf",
+        type=float,
+        default=80.0,
+        help="stop evaluating variants for a field once confidence reaches this value",
+    )
     parser.add_argument(
         "--debug-candidates",
         action="store_true",
@@ -319,6 +466,23 @@ def main() -> int:
             args.height = int(profile["height"])
         if args.interval == 1.0 and "interval" in profile:
             args.interval = float(profile["interval"])
+        if args.corners is None and "display_corners" in profile:
+            raw = profile["display_corners"]
+            if isinstance(raw, list) and len(raw) == 4:
+                pts = []
+                for p in raw:
+                    if isinstance(p, dict):
+                        pts.append((float(p["x"]), float(p["y"])))
+                    elif isinstance(p, list) and len(p) == 2:
+                        pts.append((float(p[0]), float(p[1])))
+                if len(pts) == 4:
+                    args.corners = order_corners(pts)
+        if args.warp_size is None and "warp_size" in profile:
+            ws = profile["warp_size"]
+            if isinstance(ws, dict):
+                args.warp_size = (int(ws["w"]), int(ws["h"]))
+            elif isinstance(ws, list) and len(ws) == 2:
+                args.warp_size = (int(ws[0]), int(ws[1]))
         if args.psm_list == "6,7,11" and "psm_list" in profile:
             psm_list = profile["psm_list"]
             if isinstance(psm_list, list):
@@ -331,6 +495,14 @@ def main() -> int:
             args.min_conf = float(profile["min_conf"])
         if args.scale == 3.0 and "scale" in profile:
             args.scale = float(profile["scale"])
+        if not args.fast and bool(profile.get("fast", False)):
+            args.fast = True
+        if args.variant_list == "" and "variant_list" in profile:
+            v = profile["variant_list"]
+            if isinstance(v, list):
+                args.variant_list = ",".join(str(x) for x in v)
+            else:
+                args.variant_list = str(v)
         if (
             args.whitelist == "0123456789.-:%CFHhPaINOUTWm/s"
             and "whitelist" in profile
@@ -379,6 +551,9 @@ def main() -> int:
     if args.scale <= 0:
         print("--scale must be > 0", file=sys.stderr)
         return 2
+    if not (0.0 <= args.early_conf <= 100.0):
+        print("--early-conf must be in range 0-100", file=sys.stderr)
+        return 2
 
     try:
         psm_values = [int(p.strip(), 10) for p in args.psm_list.split(",") if p.strip()]
@@ -388,6 +563,26 @@ def main() -> int:
     if not psm_values:
         print("--psm-list cannot be empty", file=sys.stderr)
         return 2
+
+    variant_allowlist: Optional[set[str]] = None
+    if args.variant_list.strip():
+        variant_allowlist = {v.strip() for v in args.variant_list.split(",") if v.strip()}
+
+    if args.fast:
+        if args.scale == 3.0:
+            args.scale = 2.0
+        if len(psm_values) > 1:
+            psm_values = psm_values[:1]
+        if variant_allowlist is None:
+            variant_allowlist = {
+                "gray",
+                "otsu",
+                "otsu_inv",
+                "green_otsu",
+                "green_otsu_inv",
+                "blackhat_otsu",
+                "blackhat_otsu_inv",
+            }
 
     cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
@@ -405,7 +600,32 @@ def main() -> int:
         print("Could not read initial camera frame", file=sys.stderr)
         return 2
 
+    if args.select_corners:
+        try:
+            selected_corners = select_four_corners(frame)
+        except cv2.error as exc:
+            cap.release()
+            print(f"Corner selection failed: {exc}", file=sys.stderr)
+            return 4
+        if selected_corners is None:
+            cap.release()
+            print("Corner selection cancelled", file=sys.stderr)
+            return 130
+        args.corners = selected_corners
+        print("Selected display corners (TL,TR,BR,BL):")
+        print(json.dumps(args.corners))
+
     frame_h, frame_w = frame.shape[:2]
+    warp_size = args.warp_size if args.warp_size is not None else (frame_w, frame_h)
+    if args.corners is not None:
+        try:
+            frame = warp_frame(frame, args.corners, warp_size)
+        except cv2.error as exc:
+            cap.release()
+            print(f"Warp failed: {exc}", file=sys.stderr)
+            return 2
+        frame_h, frame_w = frame.shape[:2]
+
     if args.dump_frame:
         ok_write = cv2.imwrite(args.dump_frame, frame)
         if not ok_write:
@@ -448,6 +668,8 @@ def main() -> int:
     x, y, w, h = roi
     print(f"Using camera index {args.camera_index} at {frame_w}x{frame_h}")
     print(f"OCR ROI: x={x}, y={y}, w={w}, h={h}")
+    if args.corners is not None:
+        print(f"Perspective warp active: size={frame_w}x{frame_h}")
 
     field_rois: dict[str, tuple[int, int, int, int]] = {}
     for raw in args.field_roi:
@@ -483,6 +705,13 @@ def main() -> int:
             "camera_index": args.camera_index,
             "frame_width": frame_w,
             "frame_height": frame_h,
+            "fast": args.fast,
+            "variant_allowlist": sorted(variant_allowlist) if variant_allowlist else [],
+            "early_conf": args.early_conf,
+            "display_corners": (
+                [{"x": c[0], "y": c[1]} for c in args.corners] if args.corners else []
+            ),
+            "warp_size": {"w": frame_w, "h": frame_h},
             "roi": {"x": x, "y": y, "w": w, "h": h},
             "field_rois": {
                 name: {"x": fx, "y": fy, "w": fw, "h": fh}
@@ -528,6 +757,13 @@ def main() -> int:
                 print("Camera read failed", file=sys.stderr)
                 return 3
 
+            if args.corners is not None:
+                try:
+                    frame = warp_frame(frame, args.corners, (frame_w, frame_h))
+                except cv2.error as exc:
+                    print(f"Warp failed on frame: {exc}", file=sys.stderr)
+                    return 3
+
             field_results: dict[str, dict[str, object]] = {}
             all_candidates: list[dict[str, object]] = []
 
@@ -541,6 +777,8 @@ def main() -> int:
                         whitelist=args.whitelist,
                         min_conf=args.min_conf,
                         scale=args.scale,
+                        variant_allowlist=variant_allowlist,
+                        early_conf=args.early_conf,
                     )
                     field_results[name] = {
                         "text": text,
@@ -574,6 +812,8 @@ def main() -> int:
                     whitelist=args.whitelist,
                     min_conf=args.min_conf,
                     scale=args.scale,
+                    variant_allowlist=variant_allowlist,
+                    early_conf=args.early_conf,
                 )
 
             changed = text != prev_text

@@ -22,6 +22,7 @@ This directory contains proof-of-concept tooling for a Cotexh FT-0203 weather st
   - Supports interactive ROI selection and NDJSON logging for USB correlation.
 - `ft0203_camera_profile.json`
   - Reusable OCR profile with FT-0203 field ROIs and tuning defaults.
+  - Supports optional perspective warp corner calibration and fast OCR mode.
 - `ft0203_frames.ndjson`
   - Captured frame file from passive listener runs.
 
@@ -139,11 +140,35 @@ QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
   --preview
 ```
 
+### Perspective Calibration (for moved camera)
+
+When the camera position changes, calibrate panel corners once and reuse them in the profile.
+
+1. Run corner picker and click the display corners in this order: top-left, top-right, bottom-right, bottom-left.
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
+  --profile ft0203_camera_profile.json \
+  --select-corners \
+  --preview \
+  --max-samples 1
+```
+
+2. Copy the printed corner list into `display_corners` in `ft0203_camera_profile.json`.
+
+With corners set, every frame is perspective-warped before OCR so ROI coordinates stay stable.
+
 Useful options:
 
 - `--roi x,y,w,h` set ROI without interactive selection.
 - `--field-roi name:x,y,w,h` define per-field OCR boxes (repeat per field).
 - `--profile ft0203_camera_profile.json` load camera and OCR defaults from profile.
+- `--select-corners` interactively pick display corners for perspective warp.
+- `--corners x1,y1,x2,y2,x3,y3,x4,y4` set corners directly from CLI.
+- `--warp-size 640x480` set warped panel size.
+- `--fast` use faster OCR path (fewer variants/PSM checks).
+- `--variant-list ...` advanced override of allowed OCR variants.
+- `--early-conf 80` stop evaluating a field once confidence threshold is reached.
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.

@@ -1,10 +1,23 @@
 {
   "name": "ft0203_default",
   "camera_index": 4,
+  "fast": true,
   "interval": 1.0,
-  "psm_list": [7, 11],
+  "psm_list": [11],
   "oem": 3,
-  "scale": 3.0,
+  "scale": 2.0,
+  "early_conf": 80,
+  "variant_list": [
+    "gray",
+    "otsu",
+    "otsu_inv",
+    "green_otsu",
+    "green_otsu_inv",
+    "blackhat_otsu",
+    "blackhat_otsu_inv"
+  ],
+  "warp_size": { "w": 640, "h": 480 },
+  "display_corners": [],
   "min_conf": 15,
   "whitelist": "0123456789.-:%",
   "field_rois": {
