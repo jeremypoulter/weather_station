@@ -14,6 +14,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import sys
 import time
 from typing import Optional
@@ -195,6 +196,94 @@ def load_profile(path: str) -> dict[str, object]:
     if not isinstance(data, dict):
         raise ValueError("profile root must be a JSON object")
     return data
+
+
+def load_json_file(path: str) -> dict[str, object]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as exc:
+        raise ValueError(f"could not read JSON file {path}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"JSON root in {path} must be an object")
+    return data
+
+
+def merge_profile_suggestions(
+    profile_path: str,
+    profile_data: dict[str, object],
+    suggestions_path: str,
+    create_backup: bool,
+) -> dict[str, object]:
+    suggestions = load_json_file(suggestions_path)
+    merged = dict(profile_data)
+
+    sugg_overrides = suggestions.get("field_overrides", {})
+    if not isinstance(sugg_overrides, dict):
+        raise ValueError("suggestions field_overrides must be an object")
+
+    profile_overrides = merged.get("field_overrides", {})
+    if not isinstance(profile_overrides, dict):
+        profile_overrides = {}
+
+    new_overrides: dict[str, object] = dict(profile_overrides)
+    for field_name, override in sugg_overrides.items():
+        if not isinstance(override, dict):
+            continue
+        current = new_overrides.get(field_name, {})
+        if not isinstance(current, dict):
+            current = {}
+        merged_field = dict(current)
+        merged_field.update(override)
+        new_overrides[str(field_name)] = merged_field
+
+    merged["field_overrides"] = new_overrides
+    if isinstance(suggestions.get("training_summary"), dict):
+        merged["training_summary"] = suggestions["training_summary"]
+
+    if create_backup:
+        stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+        backup_path = f"{profile_path}.bak.{stamp}"
+        shutil.copy2(profile_path, backup_path)
+        print(f"Profile backup written to: {backup_path}")
+
+    with open(profile_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, indent=2)
+        f.write("\n")
+
+    return merged
+
+
+def draw_raw_preview(raw_frame, corners: Optional[list[tuple[float, float]]]):
+    raw_overlay = raw_frame.copy()
+    cv2.putText(
+        raw_overlay,
+        "Raw camera view (press q=quit, c=reselect corners)",
+        (10, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (240, 240, 240),
+        2,
+        cv2.LINE_AA,
+    )
+    if corners:
+        poly = np.array([(int(x), int(y)) for x, y in corners], dtype=np.int32)
+        cv2.polylines(raw_overlay, [poly], True, (255, 200, 0), 2)
+        for idx, (cx, cy) in enumerate(corners):
+            cv2.circle(raw_overlay, (int(cx), int(cy)), 5, (0, 200, 255), -1)
+            cv2.putText(
+                raw_overlay,
+                str(idx + 1),
+                (int(cx) + 6, int(cy) - 6),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+    return raw_overlay
 
 
 def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
@@ -544,6 +633,16 @@ def main() -> int:
     parser.add_argument("--camera-index", type=int, default=0, help="camera index for OpenCV")
     parser.add_argument("--profile", default="", help="JSON profile path with camera/OCR defaults")
     parser.add_argument(
+        "--merge-suggestions",
+        default="",
+        help="merge suggestion JSON into --profile before running",
+    )
+    parser.add_argument(
+        "--merge-no-backup",
+        action="store_true",
+        help="disable backup file creation when merging suggestions",
+    )
+    parser.add_argument(
         "--corners",
         type=parse_corners,
         default=None,
@@ -581,6 +680,11 @@ def main() -> int:
     )
     parser.add_argument("--select-roi", action="store_true", help="interactively select ROI before capture")
     parser.add_argument("--preview", action="store_true", help="show live preview window")
+    parser.add_argument(
+        "--dual-preview",
+        action="store_true",
+        help="show raw camera view and adjusted OCR view at the same time",
+    )
     parser.add_argument(
         "--dump-frame",
         default="",
@@ -639,6 +743,11 @@ def main() -> int:
         default="",
         help="comma-separated subset of field names to train",
     )
+    parser.add_argument(
+        "--auto-merge-train",
+        action="store_true",
+        help="after training, merge generated suggestions into --profile",
+    )
     args = parser.parse_args()
 
     if cv2 is None:
@@ -654,6 +763,19 @@ def main() -> int:
         except ValueError as exc:
             print(f"Invalid --profile: {exc}", file=sys.stderr)
             return 2
+
+        if args.merge_suggestions:
+            try:
+                profile = merge_profile_suggestions(
+                    profile_path=args.profile,
+                    profile_data=profile,
+                    suggestions_path=args.merge_suggestions,
+                    create_backup=not args.merge_no_backup,
+                )
+            except ValueError as exc:
+                print(f"Suggestion merge failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"Merged suggestions from: {args.merge_suggestions}")
 
         if args.camera_index == 0 and "camera_index" in profile:
             args.camera_index = int(profile["camera_index"])
@@ -915,6 +1037,9 @@ def main() -> int:
         print("No GUI display detected; disabling --preview.")
         args.preview = False
 
+    if args.dual_preview and not args.preview:
+        args.preview = True
+
     start_ts = time.time()
     deadline = start_ts + args.duration if args.duration > 0 else None
     capture_path = ""
@@ -985,6 +1110,8 @@ def main() -> int:
             if not ok or frame is None:
                 print("Camera read failed", file=sys.stderr)
                 return 3
+
+            raw_frame = frame.copy()
 
             if args.corners is not None:
                 try:
@@ -1181,9 +1308,25 @@ def main() -> int:
                         2,
                         cv2.LINE_AA,
                     )
+
+                    if args.dual_preview:
+                        raw_overlay = draw_raw_preview(raw_frame, args.corners)
+                        cv2.imshow("FT-0203 Camera Raw", raw_overlay)
+
                     cv2.imshow("FT-0203 OCR Preview (press q to quit)", overlay)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord("q"):
                         break
+                    if key == ord("c") and args.dual_preview:
+                        try:
+                            selected_corners = select_four_corners(raw_frame)
+                        except cv2.error as exc:
+                            print(f"Corner reselection failed: {exc}", file=sys.stderr)
+                            selected_corners = None
+                        if selected_corners is not None:
+                            args.corners = selected_corners
+                            print("Updated display corners (TL,TR,BR,BL):")
+                            print(json.dumps(args.corners))
                 except cv2.error as exc:
                     if not preview_disabled_due_to_error:
                         print(f"Preview disabled due to GUI error: {exc}", file=sys.stderr)
@@ -1209,6 +1352,22 @@ def main() -> int:
             print(
                 f"  {field_name}: valid_ratio={ratio:.2f} top_variants={top}"
             )
+
+        if args.auto_merge_train:
+            if not args.profile:
+                print("--auto-merge-train requires --profile", file=sys.stderr)
+                return 2
+            try:
+                merge_profile_suggestions(
+                    profile_path=args.profile,
+                    profile_data=load_profile(args.profile),
+                    suggestions_path=args.train_out,
+                    create_backup=not args.merge_no_backup,
+                )
+            except ValueError as exc:
+                print(f"Auto-merge failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"Auto-merged training suggestions into: {args.profile}")
 
     print(f"OCR capture complete: samples={samples}")
     return 0

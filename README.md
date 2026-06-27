@@ -194,6 +194,40 @@ After training, inspect `ft0203_profile_suggestions.json`:
 
 - `field_overrides` contains suggested `variant_list`, `psm_list`, `whitelist`, and `post_regex`.
 - `training_summary` shows field-by-field quality (`valid_ratio`) so you can prioritize ROI fixes.
+
+Auto-merge suggestions into your profile in one command:
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
+  --profile ft0203_camera_profile.json \
+  --merge-suggestions ft0203_profile_suggestions.json \
+  --capture
+```
+
+During training, auto-merge at the end:
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
+  --profile ft0203_camera_profile.json \
+  --train-samples 80 \
+  --train-out ft0203_profile_suggestions.json \
+  --auto-merge-train \
+  --capture \
+  --preview
+```
+
+### Dual Live View
+
+Use `--dual-preview` to show two windows simultaneously:
+
+- Raw camera view (for physical alignment)
+- Adjusted/warped OCR view with field labels
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py --profile ft0203_camera_profile.json --capture --preview --dual-preview
+```
+
+In dual-preview mode, press `c` to reselect display corners live, and `q` to quit.
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
