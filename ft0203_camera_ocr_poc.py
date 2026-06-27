@@ -105,7 +105,12 @@ def order_corners(points: list[tuple[float, float]]) -> list[tuple[float, float]
     br = pts[np.argmax(s)]
     tr = pts[np.argmin(diff)]
     bl = pts[np.argmax(diff)]
-    return [tuple(tl), tuple(tr), tuple(br), tuple(bl)]
+    return [
+        (float(tl[0]), float(tl[1])),
+        (float(tr[0]), float(tr[1])),
+        (float(br[0]), float(br[1])),
+        (float(bl[0]), float(bl[1])),
+    ]
 
 
 def select_four_corners(frame) -> Optional[list[tuple[float, float]]]:
