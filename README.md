@@ -17,6 +17,9 @@ This directory contains proof-of-concept tooling for a Cotexh FT-0203 weather st
   - Active USB poller PoC.
   - Sends WH1080-style read command patterns and reads response frames.
   - Includes long-running capture mode with NDJSON timestamped output.
+- `ft0203_camera_ocr_poc.py`
+  - Live camera OCR monitor for reading display values.
+  - Supports interactive ROI selection and NDJSON logging for USB correlation.
 - `ft0203_frames.ndjson`
   - Captured frame file from passive listener runs.
 
@@ -94,6 +97,63 @@ Example:
 6. Stop capture with Ctrl+C.
 
 This gives you stable timestamp anchors so you can align video-observed value changes with byte offsets in `ft0203_capture.ndjson`.
+
+## Live Camera OCR Automation
+
+This PoC can run live OCR against the station display and log recognized text with timestamps.
+
+### Dependencies
+
+Install Tesseract OCR engine and Python packages:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
+$(which python3) -m pip install opencv-python pytesseract
+```
+
+### Run OCR Monitor
+
+Auto-generate a timestamped OCR capture file:
+
+```bash
+cd /home/jpoulter/Dev/JeremyPoulter/weather_station
+$(which python3) ./ft0203_camera_ocr_poc.py \
+  --camera-index 0 \
+  --capture \
+  --interval 1.0 \
+  --select-roi \
+  --preview
+```
+
+Useful options:
+
+- `--roi x,y,w,h` set ROI without interactive selection.
+- `--only-changes` emit OCR records only when recognized text changes.
+- `--duration 1800` stop after 30 minutes.
+- `--max-samples 600` stop after fixed OCR sample count.
+
+Each OCR NDJSON record includes:
+
+- `type=ocr`
+- `ts` and `ts_iso` timestamps
+- `text` recognized display text
+- `confidence` average token confidence (when available)
+- `changed` marker versus previous OCR sample
+
+### Recommended Combined Capture
+
+Run USB capture and camera OCR together in two terminals so both streams are timestamped:
+
+```bash
+# terminal 1: USB
+sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8 --capture --interval 1.0
+
+# terminal 2: camera OCR
+$(which python3) ./ft0203_camera_ocr_poc.py --camera-index 0 --capture --interval 1.0 --select-roi --preview
+```
+
+Then correlate by nearest timestamp between USB `type=frame` records and camera `type=ocr` records.
 
 ## Notes on Permissions
 
