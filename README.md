@@ -132,6 +132,20 @@ Useful options:
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
+- `--dump-frame frame.jpg` save an initial frame to help pick ROI coordinates manually.
+
+If ROI selection/preview fails on Wayland with Qt plugin warnings, try:
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py --camera-index 0 --capture --interval 1.0 --select-roi --preview
+```
+
+If GUI still fails, run headless by dumping one frame, choosing ROI coordinates manually, then rerun with `--roi` and without `--select-roi/--preview`:
+
+```bash
+$(which python3) ./ft0203_camera_ocr_poc.py --camera-index 0 --dump-frame frame.jpg --max-samples 1
+$(which python3) ./ft0203_camera_ocr_poc.py --camera-index 0 --capture --interval 1.0 --roi 120,80,600,240 --only-changes
+```
 
 Each OCR NDJSON record includes:
 

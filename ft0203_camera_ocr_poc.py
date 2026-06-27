@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import pathlib
 import sys
 import time
@@ -130,6 +131,11 @@ def main() -> int:
     parser.add_argument("--roi", type=parse_roi, default=None, help="OCR region as x,y,w,h")
     parser.add_argument("--select-roi", action="store_true", help="interactively select ROI before capture")
     parser.add_argument("--preview", action="store_true", help="show live preview window")
+    parser.add_argument(
+        "--dump-frame",
+        default="",
+        help="save initial frame to image path and continue (useful for manual ROI picking)",
+    )
     parser.add_argument("--only-changes", action="store_true", help="emit records only when OCR text changes")
     parser.add_argument("--psm", type=int, default=7, help="tesseract page segmentation mode")
     parser.add_argument("--oem", type=int, default=3, help="tesseract OCR engine mode")
@@ -177,10 +183,29 @@ def main() -> int:
         return 2
 
     frame_h, frame_w = frame.shape[:2]
+    if args.dump_frame:
+        ok_write = cv2.imwrite(args.dump_frame, frame)
+        if not ok_write:
+            cap.release()
+            print(f"Could not write --dump-frame output: {args.dump_frame}", file=sys.stderr)
+            return 2
+        print(f"Wrote initial frame to: {args.dump_frame}")
+        print(f"Frame size: {frame_w}x{frame_h}")
+
     roi = args.roi
     if args.select_roi:
-        selected = cv2.selectROI("Select FT-0203 Display ROI", frame, showCrosshair=True)
-        cv2.destroyWindow("Select FT-0203 Display ROI")
+        try:
+            selected = cv2.selectROI("Select FT-0203 Display ROI", frame, showCrosshair=True)
+            cv2.destroyWindow("Select FT-0203 Display ROI")
+        except cv2.error as exc:
+            cap.release()
+            print("ROI selection failed due to GUI backend issue.", file=sys.stderr)
+            print(f"OpenCV error: {exc}", file=sys.stderr)
+            print(
+                "Try one of: (1) run with QT_QPA_PLATFORM=xcb, or (2) run without --select-roi and pass --roi x,y,w,h.",
+                file=sys.stderr,
+            )
+            return 4
         if selected[2] > 0 and selected[3] > 0:
             roi = int(selected[0]), int(selected[1]), int(selected[2]), int(selected[3])
         else:
@@ -200,6 +225,9 @@ def main() -> int:
     x, y, w, h = roi
     print(f"Using camera index {args.camera_index} at {frame_w}x{frame_h}")
     print(f"OCR ROI: x={x}, y={y}, w={w}, h={h}")
+    if args.preview and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        print("No GUI display detected; disabling --preview.")
+        args.preview = False
 
     start_ts = time.time()
     deadline = start_ts + args.duration if args.duration > 0 else None
@@ -235,6 +263,7 @@ def main() -> int:
     prev_text = ""
     samples = 0
     last_tick = 0.0
+    preview_disabled_due_to_error = False
 
     try:
         while True:
@@ -289,24 +318,30 @@ def main() -> int:
             samples += 1
 
             if args.preview:
-                overlay = frame.copy()
-                cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 200, 255), 2)
-                label = text if text else "<no text>"
-                if len(label) > 80:
-                    label = label[:77] + "..."
-                cv2.putText(
-                    overlay,
-                    label,
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 0),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.imshow("FT-0203 OCR Preview (press q to quit)", overlay)
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+                try:
+                    overlay = frame.copy()
+                    cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 200, 255), 2)
+                    label = text if text else "<no text>"
+                    if len(label) > 80:
+                        label = label[:77] + "..."
+                    cv2.putText(
+                        overlay,
+                        label,
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        (0, 255, 0),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                    cv2.imshow("FT-0203 OCR Preview (press q to quit)", overlay)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+                except cv2.error as exc:
+                    if not preview_disabled_due_to_error:
+                        print(f"Preview disabled due to GUI error: {exc}", file=sys.stderr)
+                        preview_disabled_due_to_error = True
+                    args.preview = False
     except KeyboardInterrupt:
         print("Interrupted by user.")
     finally:
