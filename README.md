@@ -129,10 +129,13 @@ $(which python3) ./ft0203_camera_ocr_poc.py \
 Useful options:
 
 - `--roi x,y,w,h` set ROI without interactive selection.
+- `--field-roi name:x,y,w,h` define per-field OCR boxes (repeat per field).
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
 - `--dump-frame frame.jpg` save an initial frame to help pick ROI coordinates manually.
+- `--psm-list 6,7,11 --scale 3.0 --min-conf 15` more robust OCR defaults for low-contrast LCDs.
+- `--debug-candidates` include top OCR candidates in each output record.
 
 If ROI selection/preview fails on Wayland with Qt plugin warnings, try:
 
@@ -168,6 +171,27 @@ $(which python3) ./ft0203_camera_ocr_poc.py --camera-index 0 --capture --interva
 ```
 
 Then correlate by nearest timestamp between USB `type=frame` records and camera `type=ocr` records.
+
+### LCD OCR Tuning Notes
+
+For this display, full-screen OCR is noisy. Better results come from multiple small field ROIs.
+
+Example with named field boxes (adjust to your framing):
+
+```bash
+$(which python3) ./ft0203_camera_ocr_poc.py \
+  --camera-index 4 \
+  --capture \
+  --interval 1.0 \
+  --field-roi temp:166,132,120,95 \
+  --field-roi hum:163,205,120,85 \
+  --field-roi press:157,283,170,92 \
+  --field-roi rain:385,205,95,80 \
+  --psm-list 6,7,11 \
+  --scale 3.0 \
+  --min-conf 15 \
+  --debug-candidates
+```
 
 ## Notes on Permissions
 

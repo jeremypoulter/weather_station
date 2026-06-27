@@ -56,6 +56,17 @@ def parse_roi(value: str) -> tuple[int, int, int, int]:
     return x, y, w, h
 
 
+def parse_field_roi(value: str) -> tuple[str, tuple[int, int, int, int]]:
+    if ":" not in value:
+        raise argparse.ArgumentTypeError("field ROI must be name:x,y,w,h")
+    name, roi_part = value.split(":", 1)
+    name = name.strip()
+    if not name:
+        raise argparse.ArgumentTypeError("field ROI name cannot be empty")
+    roi = parse_roi(roi_part)
+    return name, roi
+
+
 def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
     x, y, w, h = roi
     x = min(max(0, x), max(0, width - 1))
@@ -69,18 +80,41 @@ def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[
 
 def preprocess_for_lcd(gray):
     denoised = cv2.GaussianBlur(gray, (3, 3), 0)
-    thresh = cv2.adaptiveThreshold(
-        denoised,
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(denoised)
+    return clahe
+
+
+def build_ocr_variants(gray, scale: float):
+    base = preprocess_for_lcd(gray)
+    adaptive = cv2.adaptiveThreshold(
+        base,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
         31,
         2,
     )
+    adaptive_inv = cv2.bitwise_not(adaptive)
+    otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    otsu_inv = cv2.bitwise_not(otsu)
 
-    if cv2.mean(thresh)[0] > 127:
-        thresh = cv2.bitwise_not(thresh)
-    return thresh
+    variants = {
+        "gray": base,
+        "adaptive": adaptive,
+        "adaptive_inv": adaptive_inv,
+        "otsu": otsu,
+        "otsu_inv": otsu_inv,
+    }
+    if scale > 1.0:
+        for name, img in list(variants.items()):
+            variants[f"{name}_{scale:.1f}x"] = cv2.resize(
+                img,
+                None,
+                fx=scale,
+                fy=scale,
+                interpolation=cv2.INTER_CUBIC,
+            )
+    return variants
 
 
 def extract_text_and_confidence(img, psm: int, oem: int, whitelist: str, min_conf: float) -> tuple[str, Optional[float]]:
@@ -113,6 +147,54 @@ def extract_text_and_confidence(img, psm: int, oem: int, whitelist: str, min_con
     return text, None
 
 
+def select_best_ocr(
+    gray,
+    psm_values: list[int],
+    oem: int,
+    whitelist: str,
+    min_conf: float,
+    scale: float,
+):
+    variants = build_ocr_variants(gray, scale=scale)
+    best_text = ""
+    best_conf: Optional[float] = None
+    best_score = -1.0
+    best_source = ""
+    candidates: list[dict[str, object]] = []
+
+    for variant_name, variant_img in variants.items():
+        for psm in psm_values:
+            text, conf = extract_text_and_confidence(
+                variant_img,
+                psm=psm,
+                oem=oem,
+                whitelist=whitelist,
+                min_conf=min_conf,
+            )
+            text = text.strip()
+            if not text:
+                continue
+
+            conf_score = conf if conf is not None else 0.0
+            score = conf_score + min(len(text), 24)
+            candidates.append(
+                {
+                    "variant": variant_name,
+                    "psm": psm,
+                    "text": text,
+                    "confidence": conf,
+                    "score": score,
+                }
+            )
+            if score > best_score:
+                best_score = score
+                best_text = text
+                best_conf = conf
+                best_source = f"{variant_name}/psm{psm}"
+
+    return best_text, best_conf, best_source, candidates
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live camera OCR capture for FT-0203 display")
     parser.add_argument("--camera-index", type=int, default=0, help="camera index for OpenCV")
@@ -129,6 +211,12 @@ def main() -> int:
         help="enable OCR capture mode; optionally set NDJSON output path (default: auto timestamped filename)",
     )
     parser.add_argument("--roi", type=parse_roi, default=None, help="OCR region as x,y,w,h")
+    parser.add_argument(
+        "--field-roi",
+        action="append",
+        default=[],
+        help="named OCR ROI as name:x,y,w,h (can be repeated)",
+    )
     parser.add_argument("--select-roi", action="store_true", help="interactively select ROI before capture")
     parser.add_argument("--preview", action="store_true", help="show live preview window")
     parser.add_argument(
@@ -137,14 +225,24 @@ def main() -> int:
         help="save initial frame to image path and continue (useful for manual ROI picking)",
     )
     parser.add_argument("--only-changes", action="store_true", help="emit records only when OCR text changes")
-    parser.add_argument("--psm", type=int, default=7, help="tesseract page segmentation mode")
+    parser.add_argument(
+        "--psm-list",
+        default="6,7,11",
+        help="comma-separated tesseract page segmentation modes",
+    )
     parser.add_argument("--oem", type=int, default=3, help="tesseract OCR engine mode")
     parser.add_argument(
         "--whitelist",
         default="0123456789.-:%CFHhPaINOUTWm/s",
         help="tesseract whitelist characters",
     )
-    parser.add_argument("--min-conf", type=float, default=35.0, help="minimum confidence (0-100) for tokens")
+    parser.add_argument("--min-conf", type=float, default=15.0, help="minimum confidence (0-100) for tokens")
+    parser.add_argument("--scale", type=float, default=3.0, help="upscale factor for OCR variants")
+    parser.add_argument(
+        "--debug-candidates",
+        action="store_true",
+        help="include top OCR candidates in output records",
+    )
     args = parser.parse_args()
 
     if cv2 is None:
@@ -164,6 +262,18 @@ def main() -> int:
         return 2
     if not (0.0 <= args.min_conf <= 100.0):
         print("--min-conf must be in range 0-100", file=sys.stderr)
+        return 2
+    if args.scale <= 0:
+        print("--scale must be > 0", file=sys.stderr)
+        return 2
+
+    try:
+        psm_values = [int(p.strip(), 10) for p in args.psm_list.split(",") if p.strip()]
+    except ValueError:
+        print("--psm-list must be a comma-separated list of integers", file=sys.stderr)
+        return 2
+    if not psm_values:
+        print("--psm-list cannot be empty", file=sys.stderr)
         return 2
 
     cap = cv2.VideoCapture(args.camera_index)
@@ -225,6 +335,21 @@ def main() -> int:
     x, y, w, h = roi
     print(f"Using camera index {args.camera_index} at {frame_w}x{frame_h}")
     print(f"OCR ROI: x={x}, y={y}, w={w}, h={h}")
+
+    field_rois: dict[str, tuple[int, int, int, int]] = {}
+    for raw in args.field_roi:
+        try:
+            name, f_roi = parse_field_roi(raw)
+            field_rois[name] = clamp_roi(f_roi, frame_w, frame_h)
+        except (argparse.ArgumentTypeError, ValueError) as exc:
+            cap.release()
+            print(f"Invalid --field-roi '{raw}': {exc}", file=sys.stderr)
+            return 2
+    if field_rois:
+        print("Using named field ROIs:")
+        for name, (fx, fy, fw, fh) in field_rois.items():
+            print(f"  - {name}: x={fx}, y={fy}, w={fw}, h={fh}")
+
     if args.preview and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         print("No GUI display detected; disabling --preview.")
         args.preview = False
@@ -246,13 +371,18 @@ def main() -> int:
             "frame_width": frame_w,
             "frame_height": frame_h,
             "roi": {"x": x, "y": y, "w": w, "h": h},
+            "field_rois": {
+                name: {"x": fx, "y": fy, "w": fw, "h": fh}
+                for name, (fx, fy, fw, fh) in field_rois.items()
+            },
             "interval_s": args.interval,
             "duration_s": args.duration,
             "max_samples": args.max_samples,
             "only_changes": args.only_changes,
-            "psm": args.psm,
+            "psm_list": psm_values,
             "oem": args.oem,
             "min_conf": args.min_conf,
+            "scale": args.scale,
         }
         out.write(json.dumps(meta) + "\n")
         out.flush()
@@ -285,16 +415,56 @@ def main() -> int:
                 print("Camera read failed", file=sys.stderr)
                 return 3
 
-            roi_frame = frame[y : y + h, x : x + w]
-            gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
-            proc = preprocess_for_lcd(gray)
-            text, conf = extract_text_and_confidence(
-                proc,
-                psm=args.psm,
-                oem=args.oem,
-                whitelist=args.whitelist,
-                min_conf=args.min_conf,
-            )
+            field_results: dict[str, dict[str, object]] = {}
+            all_candidates: list[dict[str, object]] = []
+
+            if field_rois:
+                for name, (fx, fy, fw, fh) in field_rois.items():
+                    f_frame = frame[fy : fy + fh, fx : fx + fw]
+                    gray = cv2.cvtColor(f_frame, cv2.COLOR_BGR2GRAY)
+                    text, conf, source, candidates = select_best_ocr(
+                        gray,
+                        psm_values=psm_values,
+                        oem=args.oem,
+                        whitelist=args.whitelist,
+                        min_conf=args.min_conf,
+                        scale=args.scale,
+                    )
+                    field_results[name] = {
+                        "text": text,
+                        "confidence": conf,
+                        "source": source,
+                        "roi": {"x": fx, "y": fy, "w": fw, "h": fh},
+                    }
+                    if args.debug_candidates and candidates:
+                        all_candidates.extend(
+                            {
+                                "field": name,
+                                **c,
+                            }
+                            for c in candidates
+                        )
+                text = " | ".join(field_results[n]["text"] for n in sorted(field_results))
+                conf_values = [
+                    float(v["confidence"])
+                    for v in field_results.values()
+                    if v["confidence"] is not None
+                ]
+                conf = (sum(conf_values) / len(conf_values)) if conf_values else None
+                source = "fields"
+                candidates = []
+            else:
+                roi_frame = frame[y : y + h, x : x + w]
+                gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
+                text, conf, source, candidates = select_best_ocr(
+                    gray,
+                    psm_values=psm_values,
+                    oem=args.oem,
+                    whitelist=args.whitelist,
+                    min_conf=args.min_conf,
+                    scale=args.scale,
+                )
+
             changed = text != prev_text
 
             if not args.only_changes or changed:
@@ -307,8 +477,19 @@ def main() -> int:
                     "roi": {"x": x, "y": y, "w": w, "h": h},
                     "text": text,
                     "confidence": conf,
+                    "source": source,
                     "changed": changed,
                 }
+                if field_results:
+                    rec["fields"] = field_results
+                if args.debug_candidates and candidates:
+                    rec["candidates"] = sorted(
+                        candidates, key=lambda c: c["score"], reverse=True
+                    )[:5]
+                if args.debug_candidates and all_candidates:
+                    rec["field_candidates"] = sorted(
+                        all_candidates, key=lambda c: c["score"], reverse=True
+                    )[:10]
                 if out is not None:
                     out.write(json.dumps(rec) + "\n")
                     out.flush()
@@ -321,6 +502,18 @@ def main() -> int:
                 try:
                     overlay = frame.copy()
                     cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 200, 255), 2)
+                    for name, (fx, fy, fw, fh) in field_rois.items():
+                        cv2.rectangle(overlay, (fx, fy), (fx + fw, fy + fh), (255, 180, 0), 2)
+                        cv2.putText(
+                            overlay,
+                            name,
+                            (fx, max(20, fy - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 180, 0),
+                            1,
+                            cv2.LINE_AA,
+                        )
                     label = text if text else "<no text>"
                     if len(label) > 80:
                         label = label[:77] + "..."
