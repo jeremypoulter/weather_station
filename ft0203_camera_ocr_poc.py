@@ -67,6 +67,20 @@ def parse_field_roi(value: str) -> tuple[str, tuple[int, int, int, int]]:
     return name, roi
 
 
+def load_profile(path: str) -> dict[str, object]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except OSError as exc:
+        raise ValueError(f"could not read profile: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"profile is not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("profile root must be a JSON object")
+    return data
+
+
 def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
     x, y, w, h = roi
     x = min(max(0, x), max(0, width - 1))
@@ -198,6 +212,7 @@ def select_best_ocr(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live camera OCR capture for FT-0203 display")
     parser.add_argument("--camera-index", type=int, default=0, help="camera index for OpenCV")
+    parser.add_argument("--profile", default="", help="JSON profile path with camera/OCR defaults")
     parser.add_argument("--width", type=int, default=0, help="requested camera width; 0 keeps default")
     parser.add_argument("--height", type=int, default=0, help="requested camera height; 0 keeps default")
     parser.add_argument("--interval", type=float, default=1.0, help="seconds between OCR samples")
@@ -251,6 +266,67 @@ def main() -> int:
     if pytesseract is None or TessOutput is None:
         print("Missing dependency: pytesseract", file=sys.stderr)
         return 2
+
+    if args.profile:
+        try:
+            profile = load_profile(args.profile)
+        except ValueError as exc:
+            print(f"Invalid --profile: {exc}", file=sys.stderr)
+            return 2
+
+        if args.camera_index == 0 and "camera_index" in profile:
+            args.camera_index = int(profile["camera_index"])
+        if args.width == 0 and "width" in profile:
+            args.width = int(profile["width"])
+        if args.height == 0 and "height" in profile:
+            args.height = int(profile["height"])
+        if args.interval == 1.0 and "interval" in profile:
+            args.interval = float(profile["interval"])
+        if args.psm_list == "6,7,11" and "psm_list" in profile:
+            psm_list = profile["psm_list"]
+            if isinstance(psm_list, list):
+                args.psm_list = ",".join(str(int(v)) for v in psm_list)
+            else:
+                args.psm_list = str(psm_list)
+        if args.oem == 3 and "oem" in profile:
+            args.oem = int(profile["oem"])
+        if args.min_conf == 15.0 and "min_conf" in profile:
+            args.min_conf = float(profile["min_conf"])
+        if args.scale == 3.0 and "scale" in profile:
+            args.scale = float(profile["scale"])
+        if (
+            args.whitelist == "0123456789.-:%CFHhPaINOUTWm/s"
+            and "whitelist" in profile
+        ):
+            args.whitelist = str(profile["whitelist"])
+        if args.roi is None and "roi" in profile:
+            r = profile["roi"]
+            if isinstance(r, list) and len(r) == 4:
+                args.roi = tuple(int(v) for v in r)
+            elif isinstance(r, dict):
+                args.roi = (
+                    int(r["x"]),
+                    int(r["y"]),
+                    int(r["w"]),
+                    int(r["h"]),
+                )
+        if not args.field_roi and "field_rois" in profile:
+            fr = profile["field_rois"]
+            if isinstance(fr, dict):
+                args.field_roi = []
+                for name, val in fr.items():
+                    if isinstance(val, list) and len(val) == 4:
+                        x, y, w, h = (int(v) for v in val)
+                    elif isinstance(val, dict):
+                        x, y, w, h = (
+                            int(val["x"]),
+                            int(val["y"]),
+                            int(val["w"]),
+                            int(val["h"]),
+                        )
+                    else:
+                        continue
+                    args.field_roi.append(f"{name}:{x},{y},{w},{h}")
     if args.interval <= 0:
         print("--interval must be > 0", file=sys.stderr)
         return 2
@@ -502,18 +578,68 @@ def main() -> int:
                 try:
                     overlay = frame.copy()
                     cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 200, 255), 2)
+
+                    panel_lines = []
                     for name, (fx, fy, fw, fh) in field_rois.items():
                         cv2.rectangle(overlay, (fx, fy), (fx + fw, fy + fh), (255, 180, 0), 2)
+                        field_val = ""
+                        if name in field_results:
+                            field_val = str(field_results[name].get("text", "")).strip()
+                        field_label = f"{name}={field_val}" if field_val else name
                         cv2.putText(
                             overlay,
-                            name,
+                            field_label,
                             (fx, max(20, fy - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
+                            0.45,
                             (255, 180, 0),
+                            2,
+                            cv2.LINE_AA,
+                        )
+                        cv2.putText(
+                            overlay,
+                            field_label,
+                            (fx, max(20, fy - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.45,
+                            (0, 0, 0),
                             1,
                             cv2.LINE_AA,
                         )
+                        if field_val:
+                            panel_lines.append(f"{name}: {field_val}")
+
+                    if panel_lines:
+                        panel_x = 10
+                        panel_y = 50
+                        panel_h = 22 + (len(panel_lines) * 20)
+                        panel_w = 320
+                        cv2.rectangle(
+                            overlay,
+                            (panel_x, panel_y),
+                            (panel_x + panel_w, panel_y + panel_h),
+                            (30, 30, 30),
+                            -1,
+                        )
+                        cv2.rectangle(
+                            overlay,
+                            (panel_x, panel_y),
+                            (panel_x + panel_w, panel_y + panel_h),
+                            (90, 180, 255),
+                            1,
+                        )
+                        for idx, line in enumerate(panel_lines):
+                            cv2.putText(
+                                overlay,
+                                line,
+                                (panel_x + 8, panel_y + 18 + (idx * 20)),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (240, 240, 240),
+                                1,
+                                cv2.LINE_AA,
+                            )
+
                     label = text if text else "<no text>"
                     if len(label) > 80:
                         label = label[:77] + "..."

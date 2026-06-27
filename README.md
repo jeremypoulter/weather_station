@@ -20,6 +20,8 @@ This directory contains proof-of-concept tooling for a Cotexh FT-0203 weather st
 - `ft0203_camera_ocr_poc.py`
   - Live camera OCR monitor for reading display values.
   - Supports interactive ROI selection and NDJSON logging for USB correlation.
+- `ft0203_camera_profile.json`
+  - Reusable OCR profile with FT-0203 field ROIs and tuning defaults.
 - `ft0203_frames.ndjson`
   - Captured frame file from passive listener runs.
 
@@ -126,16 +128,34 @@ $(which python3) ./ft0203_camera_ocr_poc.py \
   --preview
 ```
 
+Or use the prepared profile file (recommended):
+
+```bash
+cd /home/jpoulter/Dev/JeremyPoulter/weather_station
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
+  --profile ft0203_camera_profile.json \
+  --capture \
+  --only-changes \
+  --preview
+```
+
 Useful options:
 
 - `--roi x,y,w,h` set ROI without interactive selection.
 - `--field-roi name:x,y,w,h` define per-field OCR boxes (repeat per field).
+- `--profile ft0203_camera_profile.json` load camera and OCR defaults from profile.
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
 - `--dump-frame frame.jpg` save an initial frame to help pick ROI coordinates manually.
 - `--psm-list 6,7,11 --scale 3.0 --min-conf 15` more robust OCR defaults for low-contrast LCDs.
 - `--debug-candidates` include top OCR candidates in each output record.
+
+Preview now shows:
+
+- Highlighted ROI boxes for each field.
+- Per-box labels in the form `name=value`.
+- A compact side panel with the latest extracted field values.
 
 If ROI selection/preview fails on Wayland with Qt plugin warnings, try:
 

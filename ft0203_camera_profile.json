@@ -1,0 +1,16 @@
+{
+  "name": "ft0203_default",
+  "camera_index": 4,
+  "interval": 1.0,
+  "psm_list": [6, 7, 11],
+  "oem": 3,
+  "scale": 3.0,
+  "min_conf": 15,
+  "whitelist": "0123456789.-:%CFHhPaINOUTWm/s",
+  "field_rois": {
+    "temp": { "x": 166, "y": 132, "w": 120, "h": 95 },
+    "hum": { "x": 163, "y": 205, "w": 120, "h": 85 },
+    "press": { "x": 157, "y": 283, "w": 170, "h": 92 },
+    "rain": { "x": 385, "y": 205, "w": 95, "h": 80 }
+  }
+}
