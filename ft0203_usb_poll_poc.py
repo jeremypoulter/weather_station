@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import pathlib
 import sys
 import time
 
@@ -123,6 +124,13 @@ def iso_utc(ts: float) -> str:
     return dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).isoformat()
 
 
+def default_capture_path(start_ts: float) -> str:
+    stamp = dt.datetime.fromtimestamp(start_ts, tz=dt.timezone.utc).strftime(
+        "%Y%m%d_%H%M%SZ"
+    )
+    return str(pathlib.Path(f"ft0203_capture_{stamp}.ndjson"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Poll FT-0203 USB memory blocks")
     parser.add_argument("--vid", type=parse_int, default=0x1130, help="USB vendor ID")
@@ -132,7 +140,12 @@ def main() -> int:
     parser.add_argument(
         "--capture",
         default="",
-        help="NDJSON output path for long-running capture mode",
+        nargs="?",
+        const="auto",
+        help=(
+            "enable long-running capture mode; optionally set NDJSON output "
+            "path (default: auto timestamped filename)"
+        ),
     )
     parser.add_argument(
         "--interval",
@@ -201,20 +214,24 @@ def main() -> int:
         return 0
 
     start_ts = time.time()
+    capture_path = (
+        default_capture_path(start_ts) if args.capture == "auto" else args.capture
+    )
     deadline = start_ts + args.duration if args.duration > 0 else None
     cycle = 0
     total_records = 0
     prev_by_addr: dict[int, str] = {}
 
-    print(f"Capture mode enabled. Writing NDJSON to: {args.capture}")
+    print(f"Capture mode enabled. Writing NDJSON to: {capture_path}")
     print("Stop with Ctrl+C.")
 
     try:
-        with open(args.capture, "a", encoding="utf-8") as out:
+        with open(capture_path, "a", encoding="utf-8") as out:
             meta = {
                 "type": "meta",
                 "ts": start_ts,
                 "ts_iso": iso_utc(start_ts),
+                "capture_path": capture_path,
                 "vid": f"0x{args.vid:04x}",
                 "pid": f"0x{args.pid:04x}",
                 "in_ep": f"0x{ws.in_ep:02x}",

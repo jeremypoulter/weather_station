@@ -55,8 +55,16 @@ cd /home/jpoulter/Dev/JeremyPoulter/weather_station
 sudo -n $(which python3) ./ft0203_usb_poll_poc.py \
   --start 0x0000 \
   --blocks 8 \
-  --capture ft0203_capture.ndjson \
+  --capture \
   --interval 1.0
+```
+
+When `--capture` is provided without a filename, the script auto-creates a UTC timestamped file such as `ft0203_capture_20260626_223501Z.ndjson`.
+
+You can still provide an explicit file path:
+
+```bash
+sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8 --capture ft0203_capture.ndjson --interval 1.0
 ```
 
 Useful options:
