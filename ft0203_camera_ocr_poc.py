@@ -98,8 +98,23 @@ def preprocess_for_lcd(gray):
     return clahe
 
 
-def build_ocr_variants(gray, scale: float):
+def build_ocr_variants(gray, scale: float, green=None):
     base = preprocess_for_lcd(gray)
+    variants = {
+        "gray": base,
+    }
+
+    if green is not None:
+        green_blur = cv2.GaussianBlur(green, (3, 3), 0)
+        green_eq = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(green_blur)
+        blackhat = cv2.morphologyEx(
+            green_eq,
+            cv2.MORPH_BLACKHAT,
+            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)),
+        )
+        variants["green"] = green_eq
+        variants["blackhat"] = blackhat
+
     adaptive = cv2.adaptiveThreshold(
         base,
         255,
@@ -112,13 +127,33 @@ def build_ocr_variants(gray, scale: float):
     otsu = cv2.threshold(base, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     otsu_inv = cv2.bitwise_not(otsu)
 
-    variants = {
-        "gray": base,
-        "adaptive": adaptive,
-        "adaptive_inv": adaptive_inv,
-        "otsu": otsu,
-        "otsu_inv": otsu_inv,
-    }
+    variants["adaptive"] = adaptive
+    variants["adaptive_inv"] = adaptive_inv
+    variants["otsu"] = otsu
+    variants["otsu_inv"] = otsu_inv
+
+    if green is not None:
+        g_adaptive = cv2.adaptiveThreshold(
+            variants["green"],
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            31,
+            2,
+        )
+        variants["green_adaptive"] = g_adaptive
+        variants["green_adaptive_inv"] = cv2.bitwise_not(g_adaptive)
+        g_otsu = cv2.threshold(
+            variants["green"], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )[1]
+        variants["green_otsu"] = g_otsu
+        variants["green_otsu_inv"] = cv2.bitwise_not(g_otsu)
+        b_otsu = cv2.threshold(
+            variants["blackhat"], 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )[1]
+        variants["blackhat_otsu"] = b_otsu
+        variants["blackhat_otsu_inv"] = cv2.bitwise_not(b_otsu)
+
     if scale > 1.0:
         for name, img in list(variants.items()):
             variants[f"{name}_{scale:.1f}x"] = cv2.resize(
@@ -162,14 +197,16 @@ def extract_text_and_confidence(img, psm: int, oem: int, whitelist: str, min_con
 
 
 def select_best_ocr(
-    gray,
+    roi_img,
     psm_values: list[int],
     oem: int,
     whitelist: str,
     min_conf: float,
     scale: float,
 ):
-    variants = build_ocr_variants(gray, scale=scale)
+    gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
+    green = roi_img[:, :, 1]
+    variants = build_ocr_variants(gray, scale=scale, green=green)
     best_text = ""
     best_conf: Optional[float] = None
     best_score = -1.0
@@ -497,9 +534,8 @@ def main() -> int:
             if field_rois:
                 for name, (fx, fy, fw, fh) in field_rois.items():
                     f_frame = frame[fy : fy + fh, fx : fx + fw]
-                    gray = cv2.cvtColor(f_frame, cv2.COLOR_BGR2GRAY)
                     text, conf, source, candidates = select_best_ocr(
-                        gray,
+                        f_frame,
                         psm_values=psm_values,
                         oem=args.oem,
                         whitelist=args.whitelist,
@@ -531,9 +567,8 @@ def main() -> int:
                 candidates = []
             else:
                 roi_frame = frame[y : y + h, x : x + w]
-                gray = cv2.cvtColor(roi_frame, cv2.COLOR_BGR2GRAY)
                 text, conf, source, candidates = select_best_ocr(
-                    gray,
+                    roi_frame,
                     psm_values=psm_values,
                     oem=args.oem,
                     whitelist=args.whitelist,
