@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 from typing import Optional
@@ -249,6 +250,131 @@ def normalize_ocr_text(text: str, whitelist: str, post_regex: str = "") -> str:
 def roi_motion_score(current_gray, previous_gray) -> float:
     diff = cv2.absdiff(current_gray, previous_gray)
     return float(np.mean(diff))
+
+
+def default_regex_for_field(name: str) -> str:
+    n = name.lower()
+    if "time" in n:
+        return r"[0-9]{1,2}:[0-9]{2}"
+    if "hum" in n:
+        return r"[0-9]{1,3}"
+    if "press" in n:
+        return r"[0-9]{3,5}(\.[0-9])?"
+    if "temp" in n or "dew" in n or "feel" in n:
+        return r"-?[0-9]{1,2}(\.[0-9])?"
+    if "wind" in n or "gust" in n or "rain" in n:
+        return r"[0-9]{1,3}(\.[0-9])?"
+    return r"[0-9]+"
+
+
+def default_whitelist_for_field(name: str) -> str:
+    n = name.lower()
+    if "time" in n:
+        return "0123456789:"
+    if "hum" in n:
+        return "0123456789"
+    if "press" in n:
+        return "0123456789."
+    return "0123456789.-"
+
+
+def build_profile_suggestions(
+    training_data: dict[str, list[dict[str, object]]],
+    existing_overrides: dict[str, dict[str, object]],
+) -> dict[str, object]:
+    out: dict[str, object] = {
+        "generated_at": iso_utc(time.time()),
+        "field_overrides": {},
+        "training_summary": {},
+    }
+
+    for field_name, samples in training_data.items():
+        regex = default_regex_for_field(field_name)
+        whitelist = default_whitelist_for_field(field_name)
+
+        variant_scores: dict[str, list[float]] = {}
+        psm_scores: dict[int, list[float]] = {}
+        total_candidates = 0
+        valid_candidates = 0
+
+        for sample in samples:
+            cands = sample.get("candidates", [])
+            if not isinstance(cands, list):
+                continue
+            for cand in cands:
+                if not isinstance(cand, dict):
+                    continue
+                text = normalize_ocr_text(
+                    str(cand.get("text", "")),
+                    whitelist,
+                    post_regex="",
+                )
+                if not text:
+                    continue
+                total_candidates += 1
+                if not re.search(regex, text):
+                    continue
+                valid_candidates += 1
+
+                conf = cand.get("confidence")
+                try:
+                    conf_val = float(conf) if conf is not None else 0.0
+                except (TypeError, ValueError):
+                    conf_val = 0.0
+                score = conf_val + min(len(text), 12)
+
+                variant = str(cand.get("variant", ""))
+                if variant:
+                    variant_scores.setdefault(variant, []).append(score)
+
+                psm_raw = cand.get("psm")
+                try:
+                    psm = int(psm_raw)
+                    psm_scores.setdefault(psm, []).append(score)
+                except (TypeError, ValueError):
+                    pass
+
+        ranked_variants = sorted(
+            (
+                (variant, sum(scores) / len(scores))
+                for variant, scores in variant_scores.items()
+                if scores
+            ),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        ranked_psm = sorted(
+            (
+                (psm, sum(scores) / len(scores))
+                for psm, scores in psm_scores.items()
+                if scores
+            ),
+            key=lambda x: x[1],
+            reverse=True,
+        )
+
+        prev = existing_overrides.get(field_name, {})
+        suggested = dict(prev)
+        suggested["whitelist"] = whitelist
+        suggested["post_regex"] = regex
+        if ranked_variants:
+            suggested["variant_list"] = [v for v, _ in ranked_variants[:3]]
+        if ranked_psm:
+            suggested["psm_list"] = [int(p) for p, _ in ranked_psm[:2]]
+        suggested.setdefault("early_conf", 70)
+        suggested.setdefault("min_conf", 10)
+
+        out["field_overrides"][field_name] = suggested
+        out["training_summary"][field_name] = {
+            "samples": len(samples),
+            "total_candidates": total_candidates,
+            "valid_candidates": valid_candidates,
+            "valid_ratio": (valid_candidates / total_candidates) if total_candidates else 0.0,
+            "top_variants": [v for v, _ in ranked_variants[:3]],
+            "top_psm": [int(p) for p, _ in ranked_psm[:2]],
+        }
+
+    return out
 
 
 def preprocess_for_lcd(gray):
@@ -497,6 +623,22 @@ def main() -> int:
         action="store_true",
         help="include top OCR candidates in output records",
     )
+    parser.add_argument(
+        "--train-samples",
+        type=int,
+        default=0,
+        help="collect N samples and write suggested field_overrides",
+    )
+    parser.add_argument(
+        "--train-out",
+        default="ft0203_profile_suggestions.json",
+        help="output file for profile training suggestions",
+    )
+    parser.add_argument(
+        "--train-fields",
+        default="",
+        help="comma-separated subset of field names to train",
+    )
     args = parser.parse_args()
 
     if cv2 is None:
@@ -602,6 +744,9 @@ def main() -> int:
     if args.max_samples < 0:
         print("--max-samples must be >= 0", file=sys.stderr)
         return 2
+    if args.train_samples < 0:
+        print("--train-samples must be >= 0", file=sys.stderr)
+        return 2
     if not (0.0 <= args.min_conf <= 100.0):
         print("--min-conf must be in range 0-100", file=sys.stderr)
         return 2
@@ -643,6 +788,19 @@ def main() -> int:
                 "blackhat_otsu",
                 "blackhat_otsu_inv",
             }
+
+    train_enabled = args.train_samples > 0
+    train_fields = {
+        f.strip() for f in args.train_fields.split(",") if f.strip()
+    }
+    if train_enabled:
+        if args.max_samples == 0:
+            args.max_samples = args.train_samples
+        args.only_changes = False
+        args.motion_threshold = 0.0
+        print(
+            f"Training mode enabled: samples={args.max_samples}, output={args.train_out}"
+        )
 
     cap = cv2.VideoCapture(args.camera_index)
     if not cap.isOpened():
@@ -803,6 +961,7 @@ def main() -> int:
     prev_text = ""
     prev_field_result: dict[str, dict[str, object]] = {}
     prev_field_gray: dict[str, object] = {}
+    training_data: dict[str, list[dict[str, object]]] = {}
     samples = 0
     last_tick = 0.0
     preview_disabled_due_to_error = False
@@ -874,6 +1033,36 @@ def main() -> int:
                         early_conf=local_early,
                     )
                     text = normalize_ocr_text(text, local_whitelist, post_regex=post_regex)
+
+                    if train_enabled and (not train_fields or name in train_fields):
+                        normalized_candidates: list[dict[str, object]] = []
+                        for cand in candidates:
+                            if not isinstance(cand, dict):
+                                continue
+                            c_text = normalize_ocr_text(
+                                str(cand.get("text", "")),
+                                local_whitelist,
+                                post_regex="",
+                            )
+                            if not c_text:
+                                continue
+                            normalized_candidates.append(
+                                {
+                                    "variant": cand.get("variant", ""),
+                                    "psm": cand.get("psm", ""),
+                                    "text": c_text,
+                                    "confidence": cand.get("confidence"),
+                                    "score": cand.get("score"),
+                                }
+                            )
+                        training_data.setdefault(name, []).append(
+                            {
+                                "text": text,
+                                "confidence": conf,
+                                "candidates": normalized_candidates,
+                            }
+                        )
+
                     field_results[name] = {
                         "text": text,
                         "confidence": conf,
@@ -1007,6 +1196,19 @@ def main() -> int:
         cv2.destroyAllWindows()
         if out is not None:
             out.close()
+
+    if train_enabled:
+        suggestions = build_profile_suggestions(training_data, field_overrides)
+        with open(args.train_out, "w", encoding="utf-8") as f:
+            json.dump(suggestions, f, indent=2)
+            f.write("\n")
+        print(f"Training suggestions written to: {args.train_out}")
+        for field_name, summary in suggestions.get("training_summary", {}).items():
+            ratio = summary.get("valid_ratio", 0.0)
+            top = summary.get("top_variants", [])
+            print(
+                f"  {field_name}: valid_ratio={ratio:.2f} top_variants={top}"
+            )
 
     print(f"OCR capture complete: samples={samples}")
     return 0

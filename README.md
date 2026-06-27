@@ -169,6 +169,31 @@ Useful options:
 - `--fast` use faster OCR path (fewer variants/PSM checks).
 - `--variant-list ...` advanced override of allowed OCR variants.
 - `--early-conf 80` stop evaluating a field once confidence threshold is reached.
+- `--motion-threshold 1.5` skip OCR for fields whose ROI has barely changed.
+
+### Profile Trainer
+
+Use training mode to auto-suggest `field_overrides` for better per-field OCR.
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py \
+  --profile ft0203_camera_profile.json \
+  --train-samples 60 \
+  --train-out ft0203_profile_suggestions.json \
+  --capture \
+  --preview
+```
+
+Optional: train only selected fields:
+
+```bash
+QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py --profile ft0203_camera_profile.json --train-samples 60 --train-fields out_temp,pressure,in_temp,time --train-out ft0203_profile_suggestions.json --capture --preview
+```
+
+After training, inspect `ft0203_profile_suggestions.json`:
+
+- `field_overrides` contains suggested `variant_list`, `psm_list`, `whitelist`, and `post_regex`.
+- `training_summary` shows field-by-field quality (`valid_ratio`) so you can prioritize ROI fixes.
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
