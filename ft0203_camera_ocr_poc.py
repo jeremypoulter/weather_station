@@ -9,13 +9,16 @@ timestamped NDJSON records for correlation against USB capture logs.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import datetime as dt
 import json
 import os
 import pathlib
+import queue
 import re
 import shutil
 import sys
+import threading
 import time
 from typing import Optional
 
@@ -256,14 +259,51 @@ def merge_profile_suggestions(
     return merged
 
 
-def draw_raw_preview(raw_frame, corners: Optional[list[tuple[float, float]]]):
+def save_profile_runtime_updates(
+    profile_path: str,
+    profile_data: dict[str, object],
+    roi: tuple[int, int, int, int],
+    field_rois: dict[str, tuple[int, int, int, int]],
+    corners: Optional[list[tuple[float, float]]],
+    warp_size: tuple[int, int],
+    create_backup: bool,
+) -> dict[str, object]:
+    merged = dict(profile_data)
+    x, y, w, h = roi
+    merged["roi"] = {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
+    merged["field_rois"] = {
+        str(name): {"x": int(fx), "y": int(fy), "w": int(fw), "h": int(fh)}
+        for name, (fx, fy, fw, fh) in field_rois.items()
+    }
+    if corners is not None:
+        merged["display_corners"] = [[float(cx), float(cy)] for cx, cy in corners]
+    merged["warp_size"] = {"w": int(warp_size[0]), "h": int(warp_size[1])}
+
+    if create_backup:
+        stamp = dt.datetime.now(tz=dt.timezone.utc).strftime("%Y%m%d_%H%M%SZ")
+        backup_path = f"{profile_path}.bak.{stamp}"
+        shutil.copy2(profile_path, backup_path)
+        print(f"Profile backup written to: {backup_path}")
+
+    with open(profile_path, "w", encoding="utf-8") as f:
+        json.dump(merged, f, indent=2)
+        f.write("\n")
+
+    return merged
+
+
+def draw_raw_preview(
+    raw_frame,
+    corners: Optional[list[tuple[float, float]]],
+    selected_corner: int = -1,
+):
     raw_overlay = raw_frame.copy()
     cv2.putText(
         raw_overlay,
-        "Raw camera view (press q=quit, c=reselect corners)",
+        "Raw view: q quit | c pick corners | 1-4 select corner | i/j/k/l nudge",
         (10, 24),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
+        0.55,
         (240, 240, 240),
         2,
         cv2.LINE_AA,
@@ -272,7 +312,8 @@ def draw_raw_preview(raw_frame, corners: Optional[list[tuple[float, float]]]):
         poly = np.array([(int(x), int(y)) for x, y in corners], dtype=np.int32)
         cv2.polylines(raw_overlay, [poly], True, (255, 200, 0), 2)
         for idx, (cx, cy) in enumerate(corners):
-            cv2.circle(raw_overlay, (int(cx), int(cy)), 5, (0, 200, 255), -1)
+            color = (0, 0, 255) if idx == selected_corner else (0, 200, 255)
+            cv2.circle(raw_overlay, (int(cx), int(cy)), 6, color, -1)
             cv2.putText(
                 raw_overlay,
                 str(idx + 1),
@@ -295,6 +336,53 @@ def clamp_roi(roi: tuple[int, int, int, int], width: int, height: int) -> tuple[
     if w <= 0 or h <= 0:
         raise ValueError("ROI is outside frame bounds")
     return x, y, w, h
+
+
+def move_roi(
+    roi: tuple[int, int, int, int],
+    dx: int,
+    dy: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    x, y, w, h = roi
+    x = min(max(0, x + dx), max(0, width - w))
+    y = min(max(0, y + dy), max(0, height - h))
+    return x, y, w, h
+
+
+def resize_roi(
+    roi: tuple[int, int, int, int],
+    dw: int,
+    dh: int,
+    width: int,
+    height: int,
+    min_size: int = 20,
+) -> tuple[int, int, int, int]:
+    x, y, w, h = roi
+    new_w = min(width, max(min_size, w + dw))
+    new_h = min(height, max(min_size, h + dh))
+    x = min(max(0, x), max(0, width - new_w))
+    y = min(max(0, y), max(0, height - new_h))
+    return x, y, new_w, new_h
+
+
+def nudge_corner(
+    corners: list[tuple[float, float]],
+    index: int,
+    dx: int,
+    dy: int,
+    width: int,
+    height: int,
+) -> list[tuple[float, float]]:
+    if index < 0 or index >= len(corners):
+        return corners
+    out = list(corners)
+    cx, cy = out[index]
+    nx = float(min(max(0.0, cx + dx), max(0.0, float(width - 1))))
+    ny = float(min(max(0.0, cy + dy), max(0.0, float(height - 1))))
+    out[index] = (nx, ny)
+    return out
 
 
 def parse_int_list(value: object, fallback: list[int]) -> list[int]:
@@ -341,6 +429,53 @@ def roi_motion_score(current_gray, previous_gray) -> float:
     return float(np.mean(diff))
 
 
+def format_field_value(name: str, text: str) -> str:
+    """Normalize OCR digits into the display's expected format.
+
+    Seven-segment OCR commonly drops the decimal point and appends trailing
+    glyphs (seconds, the WED weekday, the % sign). This re-inserts the implied
+    decimal place for one-decimal fields and rebuilds HH:MM for the clock.
+    """
+    import re as _re
+
+    n = name.lower()
+    t = (text or "").strip()
+    if "time" in n:
+        d = _re.sub(r"\D", "", t)
+        if len(d) >= 4:
+            return f"{d[:2]}:{d[2:4]}"
+        return t
+
+    neg = t.lstrip().startswith("-")
+    has_dot = "." in t
+    d = _re.sub(r"[^0-9]", "", t)
+    if not d:
+        return t
+
+    one_decimal = any(
+        k in n for k in ("temp", "dew", "feel", "wind", "gust", "rain", "press")
+    )
+    if has_dot:
+        val = t.lstrip("-")
+        val = "".join(ch for ch in val if ch.isdigit() or ch == ".")
+    elif one_decimal and len(d) >= 2:
+        val = f"{d[:-1]}.{d[-1]}"
+    else:
+        val = d
+    return f"-{val}" if neg else val
+
+
+def finalize_field_text(name: str, raw: str, whitelist: str, post_regex: str) -> str:
+    cleaned = normalize_ocr_text(raw, whitelist, post_regex="")
+    formatted = format_field_value(name, cleaned)
+    if post_regex:
+        import re as _re
+
+        m = _re.search(post_regex, formatted)
+        return m.group(0) if m else ""
+    return formatted
+
+
 def default_regex_for_field(name: str) -> str:
     n = name.lower()
     if "time" in n:
@@ -365,6 +500,43 @@ def default_whitelist_for_field(name: str) -> str:
     if "press" in n:
         return "0123456789."
     return "0123456789.-"
+
+
+def choose_stable_text(
+    history: deque[tuple[str, Optional[float]]],
+    min_votes: int,
+    fallback_text: str,
+) -> str:
+    if not history:
+        return fallback_text
+
+    stats: dict[str, dict[str, float]] = {}
+    for text, conf in history:
+        t = str(text).strip()
+        if not t:
+            continue
+        row = stats.setdefault(t, {"count": 0.0, "conf": 0.0})
+        row["count"] += 1.0
+        if conf is not None:
+            row["conf"] += float(conf)
+
+    if not stats:
+        return fallback_text
+
+    best_text = fallback_text
+    best_count = -1.0
+    best_conf = -1.0
+    for text, row in stats.items():
+        count = row["count"]
+        avg_conf = row["conf"] / count if count > 0 else 0.0
+        if count > best_count or (count == best_count and avg_conf > best_conf):
+            best_text = text
+            best_count = count
+            best_conf = avg_conf
+
+    if best_count >= float(max(1, min_votes)):
+        return best_text
+    return fallback_text
 
 
 def build_profile_suggestions(
@@ -540,8 +712,20 @@ def build_ocr_variants(gray, scale: float, green=None):
     return variants
 
 
-def extract_text_and_confidence(img, psm: int, oem: int, whitelist: str, min_conf: float) -> tuple[str, Optional[float]]:
+def extract_text_and_confidence(
+    img,
+    psm: int,
+    oem: int,
+    whitelist: str,
+    min_conf: float,
+    lang: str = "",
+    tessdata_dir: str = "",
+) -> tuple[str, Optional[float]]:
     config = f"--oem {oem} --psm {psm}"
+    if tessdata_dir:
+        config += f' --tessdata-dir "{tessdata_dir}"'
+    if lang:
+        config += f" -l {lang}"
     if whitelist:
         config += f" -c tessedit_char_whitelist={whitelist}"
 
@@ -579,6 +763,8 @@ def select_best_ocr(
     scale: float,
     variant_allowlist: Optional[set[str]] = None,
     early_conf: Optional[float] = None,
+    lang: str = "",
+    tessdata_dir: str = "",
 ):
     gray = cv2.cvtColor(roi_img, cv2.COLOR_BGR2GRAY)
     green = roi_img[:, :, 1]
@@ -600,6 +786,8 @@ def select_best_ocr(
                 oem=oem,
                 whitelist=whitelist,
                 min_conf=min_conf,
+                lang=lang,
+                tessdata_dir=tessdata_dir,
             )
             text = text.strip()
             if not text:
@@ -628,10 +816,185 @@ def select_best_ocr(
     return best_text, best_conf, best_source, candidates
 
 
+def run_ocr_pass(
+    frame,
+    roi: tuple[int, int, int, int],
+    field_rois: dict[str, tuple[int, int, int, int]],
+    field_overrides: dict[str, dict[str, object]],
+    prev_field_result: dict[str, dict[str, object]],
+    prev_field_gray: dict[str, object],
+    psm_values: list[int],
+    oem: int,
+    whitelist: str,
+    min_conf: float,
+    scale: float,
+    variant_allowlist: Optional[set[str]],
+    early_conf: float,
+    motion_threshold: float,
+    debug_candidates: bool,
+    train_enabled: bool,
+    train_fields: set[str],
+    lang: str = "",
+    tessdata_dir: str = "",
+) -> dict[str, object]:
+    x, y, w, h = roi
+    out_prev_field_result: dict[str, dict[str, object]] = dict(prev_field_result)
+    out_prev_field_gray: dict[str, object] = dict(prev_field_gray)
+    field_results: dict[str, dict[str, object]] = {}
+    all_candidates: list[dict[str, object]] = []
+    train_updates: dict[str, list[dict[str, object]]] = {}
+
+    if field_rois:
+        for name, (fx, fy, fw, fh) in field_rois.items():
+            f_frame = frame[fy : fy + fh, fx : fx + fw]
+            f_gray = cv2.cvtColor(f_frame, cv2.COLOR_BGR2GRAY)
+
+            override = field_overrides.get(name, {})
+            local_psm = parse_int_list(override.get("psm_list"), psm_values)
+            default_wl = default_whitelist_for_field(name)
+            local_whitelist = str(override.get("whitelist", default_wl))
+            local_min_conf = float(override.get("min_conf", min_conf))
+            local_scale = float(override.get("scale", scale))
+            local_early = float(override.get("early_conf", early_conf))
+            local_variants = parse_str_set(override.get("variant_list"))
+            if local_variants is None:
+                local_variants = variant_allowlist
+            local_lang = str(override.get("lang", lang))
+            post_regex = str(override.get("post_regex", default_regex_for_field(name))).strip()
+
+            motion_score = None
+            if name in out_prev_field_gray and motion_threshold > 0:
+                motion_score = roi_motion_score(f_gray, out_prev_field_gray[name])
+                if motion_score < motion_threshold and name in out_prev_field_result:
+                    cached = dict(out_prev_field_result[name])
+                    cached["motion_score"] = motion_score
+                    cached["skipped"] = True
+                    field_results[name] = cached
+                    continue
+
+            text, conf, source, candidates = select_best_ocr(
+                f_frame,
+                psm_values=local_psm,
+                oem=oem,
+                whitelist=local_whitelist,
+                min_conf=local_min_conf,
+                scale=local_scale,
+                variant_allowlist=local_variants,
+                early_conf=local_early,
+                lang=local_lang,
+                tessdata_dir=tessdata_dir,
+            )
+            text = finalize_field_text(name, text, local_whitelist, post_regex)
+            if not text and post_regex and candidates:
+                ranked = sorted(candidates, key=lambda c: float(c.get("score", 0.0)), reverse=True)
+                for cand in ranked:
+                    ctext = finalize_field_text(
+                        name,
+                        str(cand.get("text", "")),
+                        local_whitelist,
+                        post_regex,
+                    )
+                    if not ctext:
+                        continue
+                    text = ctext
+                    cand_conf = cand.get("confidence")
+                    conf = float(cand_conf) if cand_conf is not None else None
+                    source = f"{cand.get('variant', '')}/psm{cand.get('psm', '')}"
+                    break
+
+            if train_enabled and (not train_fields or name in train_fields):
+                normalized_candidates: list[dict[str, object]] = []
+                for cand in candidates:
+                    if not isinstance(cand, dict):
+                        continue
+                    c_text = normalize_ocr_text(
+                        str(cand.get("text", "")),
+                        local_whitelist,
+                        post_regex="",
+                    )
+                    if not c_text:
+                        continue
+                    normalized_candidates.append(
+                        {
+                            "variant": cand.get("variant", ""),
+                            "psm": cand.get("psm", ""),
+                            "text": c_text,
+                            "confidence": cand.get("confidence"),
+                            "score": cand.get("score"),
+                        }
+                    )
+                train_updates.setdefault(name, []).append(
+                    {
+                        "text": text,
+                        "confidence": conf,
+                        "candidates": normalized_candidates,
+                    }
+                )
+
+            field_results[name] = {
+                "text": text,
+                "confidence": conf,
+                "source": source,
+                "roi": {"x": fx, "y": fy, "w": fw, "h": fh},
+                "motion_score": motion_score,
+                "skipped": False,
+            }
+            out_prev_field_result[name] = dict(field_results[name])
+            out_prev_field_gray[name] = f_gray
+            if debug_candidates and candidates:
+                all_candidates.extend(
+                    {
+                        "field": name,
+                        **c,
+                    }
+                    for c in candidates
+                )
+
+        text = " | ".join(field_results[n]["text"] for n in sorted(field_results))
+        conf_values = [
+            float(v["confidence"])
+            for v in field_results.values()
+            if v["confidence"] is not None
+        ]
+        conf = (sum(conf_values) / len(conf_values)) if conf_values else None
+        source = "fields"
+        candidates = []
+    else:
+        roi_frame = frame[y : y + h, x : x + w]
+        text, conf, source, candidates = select_best_ocr(
+            roi_frame,
+            psm_values=psm_values,
+            oem=oem,
+            whitelist=whitelist,
+            min_conf=min_conf,
+            scale=scale,
+            variant_allowlist=variant_allowlist,
+            early_conf=early_conf,
+        )
+
+    out: dict[str, object] = {
+        "text": text,
+        "confidence": conf,
+        "source": source,
+        "field_results": field_results,
+        "candidates": candidates,
+        "all_candidates": all_candidates,
+        "prev_field_result": out_prev_field_result,
+        "prev_field_gray": out_prev_field_gray,
+        "train_updates": train_updates,
+    }
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Live camera OCR capture for FT-0203 display")
     parser.add_argument("--camera-index", type=int, default=0, help="camera index for OpenCV")
     parser.add_argument("--profile", default="", help="JSON profile path with camera/OCR defaults")
+    parser.add_argument(
+        "--save-profile-on-exit",
+        action="store_true",
+        help="save live ROI/corner/field ROI adjustments into --profile when exiting",
+    )
     parser.add_argument(
         "--merge-suggestions",
         default="",
@@ -640,7 +1003,7 @@ def main() -> int:
     parser.add_argument(
         "--merge-no-backup",
         action="store_true",
-        help="disable backup file creation when merging suggestions",
+        help="disable backup file creation when merging suggestions or saving profile updates",
     )
     parser.add_argument(
         "--corners",
@@ -698,6 +1061,16 @@ def main() -> int:
     )
     parser.add_argument("--oem", type=int, default=3, help="tesseract OCR engine mode")
     parser.add_argument(
+        "--ocr-lang",
+        default="",
+        help="tesseract language/model (e.g. 'ssd' for seven-segment displays)",
+    )
+    parser.add_argument(
+        "--tessdata-dir",
+        default="",
+        help="directory holding extra tesseract traineddata (e.g. ./tessdata)",
+    )
+    parser.add_argument(
         "--whitelist",
         default="0123456789.-:%CFHhPaINOUTWm/s",
         help="tesseract whitelist characters",
@@ -721,6 +1094,18 @@ def main() -> int:
         type=float,
         default=2.0,
         help="skip field OCR when mean ROI pixel change is below this threshold",
+    )
+    parser.add_argument(
+        "--stabilize-window",
+        type=int,
+        default=5,
+        help="number of recent OCR samples to use for text stabilization",
+    )
+    parser.add_argument(
+        "--stabilize-min-votes",
+        type=int,
+        default=2,
+        help="minimum matching samples required before replacing with stabilized text",
     )
     parser.add_argument(
         "--debug-candidates",
@@ -757,6 +1142,7 @@ def main() -> int:
         print("Missing dependency: pytesseract", file=sys.stderr)
         return 2
 
+    profile: dict[str, object] = {}
     if args.profile:
         try:
             profile = load_profile(args.profile)
@@ -810,6 +1196,10 @@ def main() -> int:
                 args.psm_list = str(psm_list)
         if args.oem == 3 and "oem" in profile:
             args.oem = int(profile["oem"])
+        if args.ocr_lang == "" and "ocr_lang" in profile:
+            args.ocr_lang = str(profile["ocr_lang"])
+        if args.tessdata_dir == "" and "tessdata_dir" in profile:
+            args.tessdata_dir = str(profile["tessdata_dir"])
         if args.min_conf == 15.0 and "min_conf" in profile:
             args.min_conf = float(profile["min_conf"])
         if args.scale == 3.0 and "scale" in profile:
@@ -881,6 +1271,15 @@ def main() -> int:
     if args.motion_threshold < 0:
         print("--motion-threshold must be >= 0", file=sys.stderr)
         return 2
+    if args.save_profile_on_exit and not args.profile:
+        print("--save-profile-on-exit requires --profile", file=sys.stderr)
+        return 2
+    if args.stabilize_window < 1:
+        print("--stabilize-window must be >= 1", file=sys.stderr)
+        return 2
+    if args.stabilize_min_votes < 1:
+        print("--stabilize-min-votes must be >= 1", file=sys.stderr)
+        return 2
 
     try:
         psm_values = [int(p.strip(), 10) for p in args.psm_list.split(",") if p.strip()]
@@ -939,6 +1338,8 @@ def main() -> int:
         cap.release()
         print("Could not read initial camera frame", file=sys.stderr)
         return 2
+
+    camera_h, camera_w = frame.shape[:2]
 
     if args.select_corners:
         try:
@@ -1033,6 +1434,27 @@ def main() -> int:
         for name, (fx, fy, fw, fh) in field_rois.items():
             print(f"  - {name}: x={fx}, y={fy}, w={fw}, h={fh}")
 
+    def persist_current_profile() -> bool:
+        nonlocal profile
+        if not args.profile:
+            print("Cannot save changes: --profile not set", file=sys.stderr)
+            return False
+        try:
+            profile = save_profile_runtime_updates(
+                profile_path=args.profile,
+                profile_data=profile,
+                roi=(x, y, w, h),
+                field_rois=field_rois,
+                corners=args.corners,
+                warp_size=(frame_w, frame_h),
+                create_backup=not args.merge_no_backup,
+            )
+        except (ValueError, OSError) as exc:
+            print(f"Could not save profile updates: {exc}", file=sys.stderr)
+            return False
+        print(f"Saved live adjustments to profile: {args.profile}")
+        return True
+
     if args.preview and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
         print("No GUI display detected; disabling --preview.")
         args.preview = False
@@ -1084,12 +1506,182 @@ def main() -> int:
         print("Capture disabled (no --capture). Printing live OCR to console only.")
 
     prev_text = ""
-    prev_field_result: dict[str, dict[str, object]] = {}
-    prev_field_gray: dict[str, object] = {}
     training_data: dict[str, list[dict[str, object]]] = {}
     samples = 0
     last_tick = 0.0
     preview_disabled_due_to_error = False
+    corner_index = 0
+    roi_move_step = 4
+    roi_resize_step = 8
+    corner_move_step = 2
+    latest_text = ""
+    latest_conf: Optional[float] = None
+    latest_source = "fields" if field_rois else "roi"
+    latest_field_results: dict[str, dict[str, object]] = {}
+    text_history: deque[tuple[str, Optional[float]]] = deque(maxlen=args.stabilize_window)
+    field_text_history: dict[str, deque[tuple[str, Optional[float]]]] = {}
+    window_ocr = "FT-0203 OCR Preview (press q to quit)"
+    window_raw = "FT-0203 Camera Raw"
+
+    drag_target = ""
+    drag_field = ""
+    drag_corner_idx = -1
+    drag_offset_x = 0
+    drag_offset_y = 0
+    dragging = False
+
+    def point_in_rect(px: int, py: int, rect: tuple[int, int, int, int]) -> bool:
+        rx, ry, rw, rh = rect
+        return rx <= px <= (rx + rw) and ry <= py <= (ry + rh)
+
+    def find_corner_hit(
+        corners: Optional[list[tuple[float, float]]],
+        px: int,
+        py: int,
+        radius: float = 12.0,
+    ) -> int:
+        if not corners:
+            return -1
+        best_idx = -1
+        best_d2 = radius * radius
+        for idx, (cx, cy) in enumerate(corners):
+            dx = float(px) - cx
+            dy = float(py) - cy
+            d2 = dx * dx + dy * dy
+            if d2 <= best_d2:
+                best_idx = idx
+                best_d2 = d2
+        return best_idx
+
+    def on_ocr_mouse(event, mx, my, _flags, _param) -> None:
+        nonlocal x, y, w, h
+        nonlocal drag_target, drag_field, drag_offset_x, drag_offset_y, dragging
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            dragging = False
+            drag_target = ""
+            drag_field = ""
+
+            for name, roi_box in reversed(list(field_rois.items())):
+                if point_in_rect(mx, my, roi_box):
+                    drag_target = "field"
+                    drag_field = name
+                    fx, fy, _fw, _fh = roi_box
+                    drag_offset_x = mx - fx
+                    drag_offset_y = my - fy
+                    dragging = True
+                    return
+
+            if point_in_rect(mx, my, (x, y, w, h)):
+                drag_target = "roi"
+                drag_offset_x = mx - x
+                drag_offset_y = my - y
+                dragging = True
+
+        elif event == cv2.EVENT_MOUSEMOVE and dragging:
+            if drag_target == "roi":
+                nx = mx - drag_offset_x
+                ny = my - drag_offset_y
+                x, y, w, h = move_roi((x, y, w, h), nx - x, ny - y, frame_w, frame_h)
+            elif drag_target == "field" and drag_field in field_rois:
+                fx, fy, fw, fh = field_rois[drag_field]
+                nx = mx - drag_offset_x
+                ny = my - drag_offset_y
+                nx = min(max(0, nx), max(0, frame_w - fw))
+                ny = min(max(0, ny), max(0, frame_h - fh))
+                field_rois[drag_field] = (nx, ny, fw, fh)
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            dragging = False
+            drag_target = ""
+            drag_field = ""
+
+    def on_raw_mouse(event, mx, my, _flags, _param) -> None:
+        nonlocal drag_corner_idx, corner_index
+        if args.corners is None:
+            return
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            idx = find_corner_hit(args.corners, mx, my)
+            if idx >= 0:
+                drag_corner_idx = idx
+                corner_index = idx
+        elif event == cv2.EVENT_MOUSEMOVE and drag_corner_idx >= 0:
+            args.corners = nudge_corner(
+                args.corners,
+                drag_corner_idx,
+                mx - int(args.corners[drag_corner_idx][0]),
+                my - int(args.corners[drag_corner_idx][1]),
+                camera_w,
+                camera_h,
+            )
+        elif event == cv2.EVENT_LBUTTONUP:
+            drag_corner_idx = -1
+
+    if args.preview:
+        cv2.namedWindow(window_ocr)
+        cv2.setMouseCallback(window_ocr, on_ocr_mouse)
+        if args.dual_preview:
+            cv2.namedWindow(window_raw)
+            cv2.setMouseCallback(window_raw, on_raw_mouse)
+
+    ocr_request_q: queue.Queue[Optional[dict[str, object]]] = queue.Queue(maxsize=1)
+    ocr_result_q: queue.Queue[dict[str, object]] = queue.Queue(maxsize=2)
+    ocr_stop = threading.Event()
+
+    def ocr_worker() -> None:
+        worker_prev_field_result: dict[str, dict[str, object]] = {}
+        worker_prev_field_gray: dict[str, object] = {}
+        while not ocr_stop.is_set():
+            try:
+                req = ocr_request_q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if req is None:
+                break
+
+            roi_req = req.get("roi", (0, 0, frame_w, frame_h))
+            field_rois_req = req.get("field_rois", {})
+            frame_req = req.get("frame")
+            if frame_req is None:
+                continue
+
+            result = run_ocr_pass(
+                frame=frame_req,
+                roi=roi_req,
+                field_rois=field_rois_req,
+                field_overrides=field_overrides,
+                prev_field_result=worker_prev_field_result,
+                prev_field_gray=worker_prev_field_gray,
+                psm_values=psm_values,
+                oem=args.oem,
+                whitelist=args.whitelist,
+                min_conf=args.min_conf,
+                scale=args.scale,
+                variant_allowlist=variant_allowlist,
+                early_conf=args.early_conf,
+                motion_threshold=args.motion_threshold,
+                debug_candidates=args.debug_candidates,
+                train_enabled=train_enabled,
+                train_fields=train_fields,
+                lang=args.ocr_lang,
+                tessdata_dir=args.tessdata_dir,
+            )
+            worker_prev_field_result = dict(result.get("prev_field_result", {}))
+            worker_prev_field_gray = dict(result.get("prev_field_gray", {}))
+
+            result["roi"] = roi_req
+            try:
+                ocr_result_q.put_nowait(result)
+            except queue.Full:
+                try:
+                    _ = ocr_result_q.get_nowait()
+                except queue.Empty:
+                    pass
+                ocr_result_q.put_nowait(result)
+
+    ocr_thread = threading.Thread(target=ocr_worker, name="ft0203-ocr-worker", daemon=True)
+    ocr_thread.start()
 
     try:
         while True:
@@ -1098,13 +1690,6 @@ def main() -> int:
                 break
             if args.max_samples > 0 and samples >= args.max_samples:
                 break
-
-            if now - last_tick < args.interval:
-                if args.preview:
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        break
-                continue
-            last_tick = now
 
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -1120,148 +1705,102 @@ def main() -> int:
                     print(f"Warp failed on frame: {exc}", file=sys.stderr)
                     return 3
 
-            field_results: dict[str, dict[str, object]] = {}
-            all_candidates: list[dict[str, object]] = []
-
-            if field_rois:
-                for name, (fx, fy, fw, fh) in field_rois.items():
-                    f_frame = frame[fy : fy + fh, fx : fx + fw]
-                    f_gray = cv2.cvtColor(f_frame, cv2.COLOR_BGR2GRAY)
-
-                    override = field_overrides.get(name, {})
-                    local_psm = parse_int_list(override.get("psm_list"), psm_values)
-                    local_whitelist = str(override.get("whitelist", args.whitelist))
-                    local_min_conf = float(override.get("min_conf", args.min_conf))
-                    local_scale = float(override.get("scale", args.scale))
-                    local_early = float(override.get("early_conf", args.early_conf))
-                    local_variants = parse_str_set(override.get("variant_list"))
-                    if local_variants is None:
-                        local_variants = variant_allowlist
-                    post_regex = str(override.get("post_regex", "")).strip()
-
-                    motion_score = None
-                    if name in prev_field_gray and args.motion_threshold > 0:
-                        motion_score = roi_motion_score(f_gray, prev_field_gray[name])
-                        if motion_score < args.motion_threshold and name in prev_field_result:
-                            cached = dict(prev_field_result[name])
-                            cached["motion_score"] = motion_score
-                            cached["skipped"] = True
-                            field_results[name] = cached
-                            continue
-
-                    text, conf, source, candidates = select_best_ocr(
-                        f_frame,
-                        psm_values=local_psm,
-                        oem=args.oem,
-                        whitelist=local_whitelist,
-                        min_conf=local_min_conf,
-                        scale=local_scale,
-                        variant_allowlist=local_variants,
-                        early_conf=local_early,
-                    )
-                    text = normalize_ocr_text(text, local_whitelist, post_regex=post_regex)
-
-                    if train_enabled and (not train_fields or name in train_fields):
-                        normalized_candidates: list[dict[str, object]] = []
-                        for cand in candidates:
-                            if not isinstance(cand, dict):
-                                continue
-                            c_text = normalize_ocr_text(
-                                str(cand.get("text", "")),
-                                local_whitelist,
-                                post_regex="",
-                            )
-                            if not c_text:
-                                continue
-                            normalized_candidates.append(
-                                {
-                                    "variant": cand.get("variant", ""),
-                                    "psm": cand.get("psm", ""),
-                                    "text": c_text,
-                                    "confidence": cand.get("confidence"),
-                                    "score": cand.get("score"),
-                                }
-                            )
-                        training_data.setdefault(name, []).append(
-                            {
-                                "text": text,
-                                "confidence": conf,
-                                "candidates": normalized_candidates,
-                            }
-                        )
-
-                    field_results[name] = {
-                        "text": text,
-                        "confidence": conf,
-                        "source": source,
-                        "roi": {"x": fx, "y": fy, "w": fw, "h": fh},
-                        "motion_score": motion_score,
-                        "skipped": False,
-                    }
-                    prev_field_result[name] = dict(field_results[name])
-                    prev_field_gray[name] = f_gray
-                    if args.debug_candidates and candidates:
-                        all_candidates.extend(
-                            {
-                                "field": name,
-                                **c,
-                            }
-                            for c in candidates
-                        )
-                text = " | ".join(field_results[n]["text"] for n in sorted(field_results))
-                conf_values = [
-                    float(v["confidence"])
-                    for v in field_results.values()
-                    if v["confidence"] is not None
-                ]
-                conf = (sum(conf_values) / len(conf_values)) if conf_values else None
-                source = "fields"
-                candidates = []
-            else:
-                roi_frame = frame[y : y + h, x : x + w]
-                text, conf, source, candidates = select_best_ocr(
-                    roi_frame,
-                    psm_values=psm_values,
-                    oem=args.oem,
-                    whitelist=args.whitelist,
-                    min_conf=args.min_conf,
-                    scale=args.scale,
-                    variant_allowlist=variant_allowlist,
-                    early_conf=args.early_conf,
-                )
-
-            changed = text != prev_text
-
-            if not args.only_changes or changed:
-                ts = time.time()
-                rec = {
-                    "type": "ocr",
-                    "ts": ts,
-                    "ts_iso": iso_utc(ts),
-                    "sample": samples,
-                    "roi": {"x": x, "y": y, "w": w, "h": h},
-                    "text": text,
-                    "confidence": conf,
-                    "source": source,
-                    "changed": changed,
+            if (now - last_tick) >= args.interval:
+                req = {
+                    "frame": frame.copy(),
+                    "roi": (x, y, w, h),
+                    "field_rois": dict(field_rois),
                 }
-                if field_results:
-                    rec["fields"] = field_results
-                if args.debug_candidates and candidates:
-                    rec["candidates"] = sorted(
-                        candidates, key=lambda c: c["score"], reverse=True
-                    )[:5]
-                if args.debug_candidates and all_candidates:
-                    rec["field_candidates"] = sorted(
-                        all_candidates, key=lambda c: c["score"], reverse=True
-                    )[:10]
-                if out is not None:
-                    out.write(json.dumps(rec) + "\n")
-                    out.flush()
-                print(json.dumps(rec))
+                try:
+                    ocr_request_q.put_nowait(req)
+                    last_tick = now
+                except queue.Full:
+                    pass
 
-            prev_text = text
-            samples += 1
+            while True:
+                try:
+                    result = ocr_result_q.get_nowait()
+                except queue.Empty:
+                    break
+
+                raw_text = str(result.get("text", ""))
+                latest_conf = result.get("confidence")
+                latest_source = str(result.get("source", latest_source))
+                raw_field_results = dict(result.get("field_results", {}))
+
+                if raw_field_results:
+                    stabilized_field_results: dict[str, dict[str, object]] = {}
+                    for fname, frow in raw_field_results.items():
+                        ftext = str(frow.get("text", ""))
+                        fconf = frow.get("confidence")
+                        history = field_text_history.setdefault(
+                            fname,
+                            deque(maxlen=args.stabilize_window),
+                        )
+                        history.append((ftext, fconf if isinstance(fconf, (int, float)) else None))
+                        stable = choose_stable_text(
+                            history,
+                            min_votes=args.stabilize_min_votes,
+                            fallback_text=ftext,
+                        )
+                        item = dict(frow)
+                        item["raw_text"] = ftext
+                        item["text"] = stable
+                        stabilized_field_results[fname] = item
+                    latest_field_results = stabilized_field_results
+                    latest_text = " | ".join(
+                        latest_field_results[n].get("text", "") for n in sorted(latest_field_results)
+                    )
+                else:
+                    text_history.append((raw_text, latest_conf if isinstance(latest_conf, (int, float)) else None))
+                    latest_text = choose_stable_text(
+                        text_history,
+                        min_votes=args.stabilize_min_votes,
+                        fallback_text=raw_text,
+                    )
+                    latest_field_results = {}
+
+                for fname, rows in dict(result.get("train_updates", {})).items():
+                    if isinstance(rows, list):
+                        training_data.setdefault(fname, []).extend(rows)
+
+                changed = latest_text != prev_text
+                if not args.only_changes or changed:
+                    rroi = result.get("roi", (x, y, w, h))
+                    ts = time.time()
+                    rec = {
+                        "type": "ocr",
+                        "ts": ts,
+                        "ts_iso": iso_utc(ts),
+                        "sample": samples,
+                        "roi": {"x": rroi[0], "y": rroi[1], "w": rroi[2], "h": rroi[3]},
+                        "text": latest_text,
+                        "confidence": latest_conf,
+                        "source": latest_source,
+                        "changed": changed,
+                    }
+                    if latest_field_results:
+                        rec["fields"] = latest_field_results
+
+                    if args.debug_candidates:
+                        candidates = list(result.get("candidates", []))
+                        all_candidates = list(result.get("all_candidates", []))
+                        if candidates:
+                            rec["candidates"] = sorted(
+                                candidates, key=lambda c: c["score"], reverse=True
+                            )[:5]
+                        if all_candidates:
+                            rec["field_candidates"] = sorted(
+                                all_candidates, key=lambda c: c["score"], reverse=True
+                            )[:10]
+
+                    if out is not None:
+                        out.write(json.dumps(rec) + "\n")
+                        out.flush()
+                    print(json.dumps(rec))
+
+                prev_text = latest_text
+                samples += 1
 
             if args.preview:
                 try:
@@ -1271,8 +1810,8 @@ def main() -> int:
                     for name, (fx, fy, fw, fh) in field_rois.items():
                         cv2.rectangle(overlay, (fx, fy), (fx + fw, fy + fh), (255, 180, 0), 2)
                         field_val = ""
-                        if name in field_results:
-                            field_val = str(field_results[name].get("text", "")).strip()
+                        if name in latest_field_results:
+                            field_val = str(latest_field_results[name].get("text", "")).strip()
                         field_label = f"{name}={field_val}" if field_val else name
                         cv2.putText(
                             overlay,
@@ -1295,7 +1834,7 @@ def main() -> int:
                             cv2.LINE_AA,
                         )
 
-                    label = text if text else "<no text>"
+                    label = latest_text if latest_text else "<no text>"
                     if len(label) > 80:
                         label = label[:77] + "..."
                     cv2.putText(
@@ -1308,16 +1847,110 @@ def main() -> int:
                         2,
                         cv2.LINE_AA,
                     )
+                    cv2.putText(
+                        overlay,
+                        "ROI: wasd move | +/- resize | r pick ROI | p save | q quit",
+                        (10, max(54, frame_h - 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (220, 220, 220),
+                        1,
+                        cv2.LINE_AA,
+                    )
+                    if args.corners is not None:
+                        cv2.putText(
+                            overlay,
+                            f"Corners: 1-4 select ({corner_index + 1}) | i/j/k/l nudge | c repick",
+                            (10, max(34, frame_h - 36)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (220, 220, 220),
+                            1,
+                            cv2.LINE_AA,
+                        )
 
                     if args.dual_preview:
-                        raw_overlay = draw_raw_preview(raw_frame, args.corners)
-                        cv2.imshow("FT-0203 Camera Raw", raw_overlay)
+                        raw_overlay = draw_raw_preview(raw_frame, args.corners, selected_corner=corner_index)
+                        cv2.imshow(window_raw, raw_overlay)
 
-                    cv2.imshow("FT-0203 OCR Preview (press q to quit)", overlay)
+                    cv2.imshow(window_ocr, overlay)
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         break
-                    if key == ord("c") and args.dual_preview:
+
+                    if key == ord("p"):
+                        persist_current_profile()
+
+                    if key in (ord("w"), ord("a"), ord("s"), ord("d")):
+                        dx = 0
+                        dy = 0
+                        if key == ord("w"):
+                            dy = -roi_move_step
+                        elif key == ord("s"):
+                            dy = roi_move_step
+                        elif key == ord("a"):
+                            dx = -roi_move_step
+                        elif key == ord("d"):
+                            dx = roi_move_step
+                        x, y, w, h = move_roi((x, y, w, h), dx, dy, frame_w, frame_h)
+                        print(f"Updated ROI: x={x}, y={y}, w={w}, h={h}")
+
+                    if key in (ord("+"), ord("="), ord("-"), ord("_")):
+                        grow = key in (ord("+"), ord("="))
+                        delta = roi_resize_step if grow else -roi_resize_step
+                        x, y, w, h = resize_roi((x, y, w, h), delta, delta, frame_w, frame_h)
+                        print(f"Updated ROI: x={x}, y={y}, w={w}, h={h}")
+
+                    if key == ord("r"):
+                        try:
+                            selected = cv2.selectROI(
+                                "Adjust OCR ROI",
+                                frame,
+                                showCrosshair=True,
+                            )
+                            cv2.destroyWindow("Adjust OCR ROI")
+                        except cv2.error as exc:
+                            print(f"ROI reselection failed: {exc}", file=sys.stderr)
+                            selected = (0, 0, 0, 0)
+                        if selected[2] > 0 and selected[3] > 0:
+                            x, y, w, h = clamp_roi(
+                                (
+                                    int(selected[0]),
+                                    int(selected[1]),
+                                    int(selected[2]),
+                                    int(selected[3]),
+                                ),
+                                frame_w,
+                                frame_h,
+                            )
+                            print(f"Updated ROI: x={x}, y={y}, w={w}, h={h}")
+
+                    if key in (ord("1"), ord("2"), ord("3"), ord("4")):
+                        corner_index = int(chr(key), 10) - 1
+
+                    if key in (ord("i"), ord("j"), ord("k"), ord("l")) and args.corners is not None:
+                        cdx = 0
+                        cdy = 0
+                        if key == ord("i"):
+                            cdy = -corner_move_step
+                        elif key == ord("k"):
+                            cdy = corner_move_step
+                        elif key == ord("j"):
+                            cdx = -corner_move_step
+                        elif key == ord("l"):
+                            cdx = corner_move_step
+                        args.corners = nudge_corner(
+                            args.corners,
+                            corner_index,
+                            cdx,
+                            cdy,
+                            raw_frame.shape[1],
+                            raw_frame.shape[0],
+                        )
+                        print("Updated display corners (TL,TR,BR,BL):")
+                        print(json.dumps(args.corners))
+
+                    if key == ord("c") and args.corners is not None:
                         try:
                             selected_corners = select_four_corners(raw_frame)
                         except cv2.error as exc:
@@ -1325,6 +1958,7 @@ def main() -> int:
                             selected_corners = None
                         if selected_corners is not None:
                             args.corners = selected_corners
+                            corner_index = 0
                             print("Updated display corners (TL,TR,BR,BL):")
                             print(json.dumps(args.corners))
                 except cv2.error as exc:
@@ -1332,9 +1966,19 @@ def main() -> int:
                         print(f"Preview disabled due to GUI error: {exc}", file=sys.stderr)
                         preview_disabled_due_to_error = True
                     args.preview = False
+            else:
+                time.sleep(0.005)
     except KeyboardInterrupt:
         print("Interrupted by user.")
     finally:
+        if args.save_profile_on_exit:
+            persist_current_profile()
+        ocr_stop.set()
+        try:
+            ocr_request_q.put_nowait(None)
+        except queue.Full:
+            pass
+        ocr_thread.join(timeout=1.0)
         cap.release()
         cv2.destroyAllWindows()
         if out is not None:

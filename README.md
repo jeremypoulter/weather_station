@@ -115,6 +115,42 @@ sudo apt-get install -y tesseract-ocr
 $(which python3) -m pip install opencv-python pytesseract
 ```
 
+### Seven-Segment OCR Model (important for accuracy)
+
+The FT-0203 panel uses a seven-segment LCD font that the default Tesseract
+`eng` model reads very poorly (it drops digits and decimal points). Accuracy
+jumps from roughly 3% to ~94% by using a seven-segment trained model.
+
+The `tessdata/` folder holds `ssd.traineddata` (from
+[Shreeshrii/tessdata_ssd](https://github.com/Shreeshrii/tessdata_ssd)). The
+profile enables it automatically via:
+
+```json
+"oem": 1,
+"ocr_lang": "ssd",
+"tessdata_dir": "tessdata"
+```
+
+You can also override per run:
+
+```bash
+--ocr-lang ssd --tessdata-dir tessdata --oem 1
+```
+
+To re-download the model:
+
+```bash
+mkdir -p tessdata
+curl -fsSL -o tessdata/ssd.traineddata \
+  https://github.com/Shreeshrii/tessdata_ssd/raw/master/ssd.traineddata
+```
+
+Seven-segment OCR commonly omits the decimal point and appends trailing glyphs
+(seconds, the `WED` weekday, the `%` sign). The pipeline post-processes each
+field with `format_field_value()` to re-insert the implied decimal place for
+one-decimal fields and to rebuild `HH:MM` for the clock. Per-field ROIs are
+tuned to exclude unit symbols (`°C`, `%`) and panel labels.
+
 ### Run OCR Monitor
 
 Auto-generate a timestamped OCR capture file:
@@ -228,11 +264,45 @@ QT_QPA_PLATFORM=xcb $(which python3) ./ft0203_camera_ocr_poc.py --profile ft0203
 ```
 
 In dual-preview mode, press `c` to reselect display corners live, and `q` to quit.
+
+Live adjustment keys while preview is open:
+
+- `w/a/s/d`: move OCR ROI
+- `+` or `=`: grow ROI
+- `-`: shrink ROI
+- `r`: reselect ROI interactively
+- `1/2/3/4`: select corner (TL/TR/BR/BL)
+- `i/j/k/l`: nudge selected corner up/left/down/right
+- `c`: re-pick all 4 corners
+- `p`: save current ROI/corners/field boxes to profile
+- `q`: quit
+
+Mouse interactions in live preview:
+
+- Drag the main OCR ROI box directly in the OCR preview window.
+- Drag named field ROI boxes directly in the OCR preview window.
+- In dual-preview mode, drag corner points directly in the raw view window.
+
+Responsiveness note:
+
+- Live display rendering and OCR processing run on separate threads.
+- The UI keeps refreshing while OCR runs in the background.
+
+Saving note:
+
+- Use `p` during preview to persist the current geometry to `--profile`.
+- Use `--save-profile-on-exit` to automatically save adjustments when the run ends.
+
+Notes:
+
+- Corner keys apply when perspective warp corners are enabled.
+- You can use corner keys in both single preview and dual preview modes.
 - `--only-changes` emit OCR records only when recognized text changes.
 - `--duration 1800` stop after 30 minutes.
 - `--max-samples 600` stop after fixed OCR sample count.
 - `--dump-frame frame.jpg` save an initial frame to help pick ROI coordinates manually.
 - `--psm-list 6,7,11 --scale 3.0 --min-conf 15` more robust OCR defaults for low-contrast LCDs.
+- `--stabilize-window 7 --stabilize-min-votes 3` smooth noisy OCR by requiring repeat reads before updating values.
 - `--debug-candidates` include top OCR candidates in each output record.
 
 Preview now shows:
