@@ -12,11 +12,3 @@ env/
 
 # Local editor state
 .vscode/
-
-# OCR/tuning generated artifacts
-samples/
-ft0203_profile_suggestions.json
-ft0203_camera_profile.json.bak.*
-
-# Local tessdata models (large binary files)
-tessdata/
