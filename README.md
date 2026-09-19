@@ -28,12 +28,50 @@ This directory contains proof-of-concept tooling for a Cotexh FT-0203 weather st
 
 ## Current Findings
 
-1. Device access and endpoint discovery works.
-2. Passive hidraw reading produced no frames unless the device is explicitly polled.
-3. Active polling returns consistent 64-byte responses from the station.
-4. Changing requested memory address did not change returned payload in current command mode.
+As of 2026-09-19, **the WeatherHome read protocol works on this station**:
 
-This means transport is working, but field-level protocol decoding is still incomplete.
+1. Send `03 01 04` (device info) or `03 04 07` (current readings), zero-padded
+   to 64 bytes, via interrupt OUT `0x04`.
+2. Read reports from interrupt IN `0x83`. Byte zero gives the application packet
+   length; the final application byte is an additive checksum.
+3. Current readings are 76-byte packets spanning two USB reports. Five test
+   readings produced four distinct packets, all with valid checksums.
+4. The earlier WH1080-style A1 command produced an invariant four-byte
+   status/error-like packet (`04 80 02 86`), followed by unused report bytes.
+   The older poller and probe scripts preserve that historical experiment.
+
+Use the new bounded reader:
+
+```bash
+python3 ft0203_usb_read.py
+```
+
+This opens an in-place terminal dashboard, records raw reports and validated
+packets to an auto-named NDJSON file, and runs until Ctrl+C. The default
+interval is 16 seconds. `r` toggles the raw packet and `h` shows a short help
+message. Use `q` or Ctrl+C to quit.
+
+For a log-friendly one-line reading per packet:
+
+```bash
+python3 ft0203_usb_read.py --plain --samples 5 --interval 5
+```
+
+Useful options:
+
+- `--duration 3600` stops after one hour.
+- `--samples 20` stops after 20 current-reading packets.
+- `--out file.ndjson` chooses a new NDJSON destination.
+- `--plain` disables the interactive dashboard; it is selected automatically
+  when output is redirected.
+
+Each valid current packet emits a structured `type=reading` NDJSON record with
+the original packet, byte changes, raw values, and decoded fields. Indoor and
+outdoor temperature/humidity are display-validated. Pressure, wind, direction,
+and rain candidates are clearly marked provisional or conflicting in both
+output modes.
+See [USB_FINDINGS.md](USB_FINDINGS.md) for captures, the WeatherHome installer
+source, driver comparisons, and the verified protocol.
 
 ## Run
 
