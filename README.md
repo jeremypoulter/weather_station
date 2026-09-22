@@ -46,8 +46,9 @@ against the console display.
 The former WH1080-style A1 address command is not valid for this station. Its
 invariant response is a four-byte status/error packet: `04 80 02 86`.
 
-See [USB_FINDINGS.md](USB_FINDINGS.md) for packet captures, protocol evidence,
-the WeatherHome source investigation, and field-decoding status.
+See [USB_PROTOCOL.md](USB_PROTOCOL.md) for the verified transport, framing,
+and complete current-record map. [USB_FINDINGS.md](USB_FINDINGS.md) contains
+the experiment log and WeatherHome source investigation.
 
 ## Live Reader
 
