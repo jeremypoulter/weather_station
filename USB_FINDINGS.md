@@ -326,3 +326,21 @@ is also validated by a later owner comparison. The adjacent `0x36` and `0x38`
 values are not competing encodings: the source driver identifies them as
 absolute and relative pressure respectively. The owner has now confirmed the
 absolute-pressure display, so both fields are validated.
+
+### Rain verification update, 2026-09-22
+
+The active reader capture `ft0203_usb_read_20260922_082729Z.ndjson` contains a
+reading at 2026-09-22 10:45:50 UTC with these raw rain values:
+
+| Field | Raw little-endian value | Validated decode |
+|---|---:|---:|
+| Last hour (`0x3f`) | `0x007b` | `123 * 0.1 = 12.3 mm` |
+| Today (`0x41`) | `0x00de` | `222 * 0.1 = 22.2 mm` |
+| Week (`0x43`) | `0x00de` | `222 * 0.1 = 22.2 mm` |
+| Month (`0x45`) | `0x0de0` | `(0x0de0 >> 4) * 0.1 = 22.2 mm` |
+| Total (`0x48`) | `0x00de` | `222 * 0.1 = 22.2 mm` |
+
+The owner reported the same display values: 12.3 mm for one hour and 22.2 mm
+for every other displayed rain period. This validates all five rain fields.
+The hour/day/week fields use direct tenths; the earlier reference's right-shift
+formula for those three fields is incorrect for this station.

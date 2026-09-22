@@ -4,7 +4,7 @@ import json
 import unittest
 from pathlib import Path
 
-from ft0203_usb_read import CURRENT_COMMAND, decode_current_packet, validate_packet
+from ft0203_usb_read import CURRENT_COMMAND, decode_current_packet, decode_rain, validate_packet
 
 
 CAPTURE_PATH = Path("ft0203_usb_read_1789836512.ndjson")
@@ -34,6 +34,8 @@ class FT0203USBReadTests(unittest.TestCase):
         self.assertEqual(readings[0]["fields"]["wind_gust"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["wind_direction"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["wind_average"]["status"], "validated")
+        self.assertEqual(readings[0]["fields"]["rain_last_hour"]["status"], "validated")
+        self.assertEqual(readings[0]["fields"]["rain_month"]["status"], "validated")
         self.assertAlmostEqual(readings[0]["fields"]["indoor_temperature"]["value"], 23.89, places=2)
         self.assertAlmostEqual(readings[0]["fields"]["outdoor_temperature"]["value"], 19.78, places=2)
 
@@ -42,6 +44,11 @@ class FT0203USBReadTests(unittest.TestCase):
         packet[-1] ^= 1
         with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
             validate_packet(bytes(packet))
+
+    def test_rain_scaling_matches_verified_display_values(self) -> None:
+        self.assertAlmostEqual(decode_rain(0x007B, set()), 12.3)
+        self.assertAlmostEqual(decode_rain(0x00DE, set()), 22.2)
+        self.assertAlmostEqual(decode_rain(0x0DE0, set(), packed=True), 22.2)
 
 
 if __name__ == "__main__":

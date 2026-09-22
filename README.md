@@ -35,11 +35,13 @@ Validated against the console display:
 - Average wind at packet offset `0x3a`
 - Wind gust: `LE16(0x3b) * 0.00625 m/s`
 - Wind direction: `LE16(0x3d)` degrees
+- Rain last hour, today, week, month, and total
 
 Absolute pressure at `0x36` and relative pressure at `0x38` are separate,
-validated fields. Rain values remain provisional. Dew point and feels-like are
-calculated from decoded readings and have been checked against the console
-display.
+validated fields. Rain hour/day/week/total use direct tenths of millimetres;
+the packed month value uses a four-bit right shift before the same scaling. Dew
+point and feels-like are calculated from decoded readings and have been checked
+against the console display.
 
 The former WH1080-style A1 address command is not valid for this station. Its
 invariant response is a four-byte status/error packet: `04 80 02 86`.

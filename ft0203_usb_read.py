@@ -51,10 +51,10 @@ def fahrenheit_tenths_to_celsius(raw: int) -> float:
     return ((raw - 400) / 10.0 - 32.0) * 5.0 / 9.0
 
 
-def decode_rain(raw: int, nulls: set[int]) -> float | None:
+def decode_rain(raw: int, nulls: set[int], packed: bool = False) -> float | None:
     if raw in nulls or raw & 0x0FFF == 0x0FFF:
         return None
-    return (raw >> 4) * 0.1
+    return (raw >> 4 if packed else raw) * 0.1
 
 
 def dew_point_celsius(temp_c: float, humidity: int) -> float:
@@ -119,11 +119,11 @@ def decode_current_packet(packet: bytes) -> dict[str, Any]:
         "wind_average": field(wind_average, "m/s", "validated", wind_average_raw),
         "wind_gust": field(gust_raw * 0.00625, "m/s", "validated", gust_raw),
         "wind_direction": field(direction_raw, "degrees", "validated", direction_raw),
-        "rain_last_hour": field(decode_rain(le16(packet, 0x3F), {0xA7FA}), "mm", "provisional", le16(packet, 0x3F)),
-        "rain_today": field(decode_rain(le16(packet, 0x41), {0x7FA7}), "mm", "provisional", le16(packet, 0x41)),
-        "rain_week": field(decode_rain(le16(packet, 0x43), {0xFAA7}), "mm", "provisional", le16(packet, 0x43)),
-        "rain_month": field(decode_rain(le16(packet, 0x45), set()), "mm", "provisional", le16(packet, 0x45)),
-        "rain_total": field(le16(packet, 0x48) * 0.1, "mm", "provisional", le16(packet, 0x48)),
+        "rain_last_hour": field(decode_rain(le16(packet, 0x3F), {0xA7FA}), "mm", "validated", le16(packet, 0x3F)),
+        "rain_today": field(decode_rain(le16(packet, 0x41), {0x7FA7}), "mm", "validated", le16(packet, 0x41)),
+        "rain_week": field(decode_rain(le16(packet, 0x43), {0xFAA7}), "mm", "validated", le16(packet, 0x43)),
+        "rain_month": field(decode_rain(le16(packet, 0x45), set(), packed=True), "mm", "validated", le16(packet, 0x45)),
+        "rain_total": field(le16(packet, 0x48) * 0.1, "mm", "validated", le16(packet, 0x48)),
         "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived_validated"),
         "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived_validated"),
     }
@@ -211,10 +211,9 @@ class Dashboard:
         self._row(8, "Absolute pressure", value_text(fields["absolute_pressure"]), "Feels like", value_text(fields["feels_like"]))
         self._row(9, "Wind gust", value_text(fields["wind_gust"]), "Wind direction", value_text(fields["wind_direction"], 0))
         self._row(10, "Wind average", value_text(fields["wind_average"]), "", "")
-        self.screen.addstr(12, 0, "Provisional readings", curses.A_BOLD)
-        self._row(13, "Rain last hour", value_text(fields["rain_last_hour"]), "Rain today", value_text(fields["rain_today"]))
-        self._row(14, "Rain week", value_text(fields["rain_week"]), "Rain month", value_text(fields["rain_month"]))
-        self._row(15, "Rain total", value_text(fields["rain_total"]), "", "")
+        self._row(12, "Rain last hour", value_text(fields["rain_last_hour"]), "Rain today", value_text(fields["rain_today"]))
+        self._row(13, "Rain week", value_text(fields["rain_week"]), "Rain month", value_text(fields["rain_month"]))
+        self._row(14, "Rain total", value_text(fields["rain_total"]), "", "")
         self.screen.addstr(18, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}")
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
         self.screen.addnstr(19, 0, f"Changed bytes: {changes}  Output: {self.output}", cols - 1)
