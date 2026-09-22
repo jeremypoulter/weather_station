@@ -1,51 +1,71 @@
-# FT-0203 Weather Station PoC
+# FT-0203 Weather Station
 
-This directory contains proof-of-concept tooling for a Cotexh FT-0203 weather station that enumerates as:
+USB tooling for a Cotech FT-0203 weather station using the WeatherHome
+protocol.
 
-- USB VID:PID `1130:0829`
+## Device
+
+- USB VID:PID: `1130:0829`
 - Product string: `TMU313X USB R/W64`
-- Interface class: HID (`usbhid`)
+- Interface: HID
 - Interrupt endpoints: IN `0x83`, OUT `0x04`
-- Interrupt packet size: `64` bytes
+- USB report size: 64 bytes
 
-## Files
+## Current Status
 
-- `ft0203_poc.py`
-  - Passive HID raw listener (reads from `/dev/hidrawX`).
-  - Useful for checking whether unsolicited reports appear.
-- `ft0203_usb_poll_poc.py`
-  - Active USB poller PoC.
-  - Sends WH1080-style read command patterns and reads response frames.
-  - Includes long-running capture mode with NDJSON timestamped output.
-- `ft0203_frames.ndjson`
-  - Captured frame file from passive listener runs.
+The WeatherHome read protocol is verified against the attached station:
 
-## Current Findings
+```text
+Device information request: 03 01 04
+Current reading request:    03 04 07
+```
 
-As of 2026-09-19, **the WeatherHome read protocol works on this station**:
+Each command is zero-padded to 64 bytes and sent through interrupt OUT `0x04`.
+Replies arrive on interrupt IN `0x83`. Application packets are length-prefixed
+and end with an additive checksum. Current readings are 76-byte packets that
+span two USB reports.
 
-1. Send `03 01 04` (device info) or `03 04 07` (current readings), zero-padded
-   to 64 bytes, via interrupt OUT `0x04`.
-2. Read reports from interrupt IN `0x83`. Byte zero gives the application packet
-   length; the final application byte is an additive checksum.
-3. Current readings are 76-byte packets spanning two USB reports. Five test
-   readings produced four distinct packets, all with valid checksums.
-4. The earlier WH1080-style A1 command produced an invariant four-byte
-   status/error-like packet (`04 80 02 86`), followed by unused report bytes.
-   The older poller and probe scripts preserve that historical experiment.
+Validated against the console display:
 
-Use the new bounded reader:
+- Indoor temperature and humidity
+- Outdoor temperature and humidity
+- Absolute pressure at packet offset `0x36`
+- Relative pressure at packet offset `0x38`
+- Derived dew point and feels-like values
+- Average wind at packet offset `0x3a`
+- Wind gust: `LE16(0x3b) * 0.00625 m/s`
+- Wind direction: `LE16(0x3d)` degrees
+
+Absolute pressure at `0x36` and relative pressure at `0x38` are separate,
+validated fields. Rain values remain provisional. Dew point and feels-like are
+calculated from decoded readings and have been checked against the console
+display.
+
+The former WH1080-style A1 address command is not valid for this station. Its
+invariant response is a four-byte status/error packet: `04 80 02 86`.
+
+See [USB_FINDINGS.md](USB_FINDINGS.md) for packet captures, protocol evidence,
+the WeatherHome source investigation, and field-decoding status.
+
+## Live Reader
+
+Run the interactive terminal dashboard:
 
 ```bash
 python3 ft0203_usb_read.py
 ```
 
-This opens an in-place terminal dashboard, records raw reports and validated
-packets to an auto-named NDJSON file, and runs until Ctrl+C. The default
-interval is 16 seconds. `r` toggles the raw packet and `h` shows a short help
-message. Use `q` or Ctrl+C to quit.
+The reader requests a current packet every 16 seconds, displays decoded values
+in place, writes raw reports and structured readings to a timestamped NDJSON
+file, and runs until Ctrl+C.
 
-For a log-friendly one-line reading per packet:
+Controls:
+
+- `r`: show or hide the raw packet
+- `h`: show help
+- `q` or Ctrl+C: quit
+
+For line-oriented output:
 
 ```bash
 python3 ft0203_usb_read.py --plain --samples 5 --interval 5
@@ -53,120 +73,48 @@ python3 ft0203_usb_read.py --plain --samples 5 --interval 5
 
 Useful options:
 
-- `--duration 3600` stops after one hour.
-- `--samples 20` stops after 20 current-reading packets.
-- `--out file.ndjson` chooses a new NDJSON destination.
-- `--plain` disables the interactive dashboard; it is selected automatically
-  when output is redirected.
+- `--duration 3600`: stop after one hour
+- `--samples 20`: stop after 20 current packets
+- `--interval 5`: request a current packet every five seconds
+- `--out capture.ndjson`: choose a new NDJSON output path
+- `--plain`: disable the dashboard; selected automatically when output is redirected
 
-Each valid current packet emits a structured `type=reading` NDJSON record with
-the original packet, byte changes, raw values, and decoded fields. Indoor and
-outdoor temperature/humidity are display-validated. Pressure, wind, direction,
-and rain candidates are clearly marked provisional or conflicting in both
-output modes.
-See [USB_FINDINGS.md](USB_FINDINGS.md) for captures, the WeatherHome installer
-source, driver comparisons, and the verified protocol.
+Each successful current packet emits a `type=reading` NDJSON record containing
+the original packet, changed offsets, raw field values, candidate decodes,
+units, and a validation status for each field.
 
-## Run
+## Other Tools
 
-Use the same Python used during PoC setup (has `pyusb` installed):
+- `ft0203_poc.py`: passive hidraw listener. The station does not emit
+  unsolicited reports.
+- `ft0203_usb_probe.py`: explicit historical transport experiments. It records
+  control-transfer, interrupt, and report-descriptor results without automatic
+  fallback.
+- `ft0203_usb_poll_poc.py`: historical WH1080 A1 memory-read experiment. Keep
+  it as protocol evidence; use `ft0203_usb_read.py` for current data.
 
-```bash
-cd /home/jpoulter/Dev/JeremyPoulter/weather_station
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8
-```
+## Tests
 
-Try multiple addresses:
-
-```bash
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0100 --blocks 8
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x1000 --blocks 8
-```
-
-### Long-Running Capture (for Video Correlation)
-
-Use capture mode to log timestamped USB frames continuously while filming the station display.
+Run the captured-packet regression checks:
 
 ```bash
-cd /home/jpoulter/Dev/JeremyPoulter/weather_station
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py \
-  --start 0x0000 \
-  --blocks 8 \
-  --capture \
-  --interval 1.0
+python3 -m unittest -v test_ft0203_usb_read.py
 ```
 
-When `--capture` is provided without a filename, the script auto-creates a UTC timestamped file such as `ft0203_capture_20260626_223501Z.ndjson`.
+## USB Permissions
 
-You can still provide an explicit file path:
-
-```bash
-sudo -n $(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8 --capture ft0203_capture.ndjson --interval 1.0
-```
-
-Useful options:
-
-- `--duration 1800` stop automatically after 30 minutes.
-- `--max-cycles 600` stop after fixed number of polls.
-- `--only-changes` only write records when payload changes for a given block.
-
-NDJSON output includes:
-
-- `type=meta` session metadata at start.
-- `type=frame` entries with Unix timestamp (`ts`), ISO UTC timestamp (`ts_iso`), poll `cycle`, block `address`, and payload hex (`hex`).
-
-Example:
-
-```json
-{"type":"frame","ts":1761400000.123,"ts_iso":"2025-10-25T09:46:40.123000+00:00","cycle":12,"address":0,"index":0,"len":64,"hex":"...","changed":true}
-```
-
-## Notes on Permissions
-
-By default, hidraw and direct USB access may require root privileges.
-
-To enable non-root access on Linux, create a udev rule for this device.
-
-1. Create the rule file:
+Direct USB access may require root privileges. To enable non-root access on
+Linux, create a udev rule:
 
 ```bash
 sudo tee /etc/udev/rules.d/99-ft0203.rules >/dev/null <<'EOF'
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1130", ATTRS{idProduct}=="0829", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="1130", ATTR{idProduct}=="0829", MODE="0660", GROUP="plugdev", TAG+="uaccess"
 EOF
-```
-
-2. Ensure your user is in `plugdev`:
-
-```bash
-sudo usermod -aG plugdev $USER
-```
-
-3. Reload rules and trigger:
-
-```bash
+sudo usermod -aG plugdev "$USER"
 sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-4. Unplug/replug the weather station, then verify:
-
-```bash
-ls -l /dev/hidraw*
-```
-
-After this, you should be able to run the poller without `sudo`:
-
-```bash
-cd /home/jpoulter/Dev/JeremyPoulter/weather_station
-$(which python3) ./ft0203_usb_poll_poc.py --start 0x0000 --blocks 8
-```
-
-If group membership was changed, log out and back in once before retesting.
-
-## Suggested Next Steps
-
-1. Collect a dataset while known values on the station display change.
-2. Correlate byte offsets against known temperature/humidity/pressure/wind/rain values.
-3. Build a first decoder module that emits candidate parsed fields with confidence scores.
+Unplug and reconnect the station, then log out and back in if group membership
+changed.

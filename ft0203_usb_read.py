@@ -109,26 +109,23 @@ def decode_current_packet(packet: bytes) -> dict[str, Any]:
     wind_average = wind_average_raw * 0.1
     gust_raw = le16(packet, 0x3B)
     direction_raw = le16(packet, 0x3D)
-    direction_byte = packet[0x3D]
     fields = {
         "outdoor_temperature": field(outdoor_temp, "C", "validated", outdoor_raw),
         "outdoor_humidity": field(outdoor_humidity, "%", "validated", outdoor_humidity),
         "indoor_temperature": field(indoor_temp, "C", "validated", indoor_raw),
         "indoor_humidity": field(indoor_humidity, "%", "validated", indoor_humidity),
-        "pressure_at_0x36": field(le16(packet, 0x36) * 0.1, "hPa", "provisional", le16(packet, 0x36)),
-        "pressure_at_0x38": field(le16(packet, 0x38) * 0.1, "hPa", "provisional", le16(packet, 0x38)),
-        "wind_average": field(wind_average, "m/s", "provisional", wind_average_raw),
-        "wind_gust_scale_0_1": field(gust_raw * 0.1, "m/s", "conflicting", gust_raw),
-        "wind_gust_scale_0_00625": field(gust_raw * 0.00625, "m/s", "conflicting", gust_raw),
-        "wind_direction_byte": field(direction_byte, "degrees", "conflicting", direction_byte),
-        "wind_direction_le16": field(direction_raw, "degrees", "conflicting", direction_raw),
+        "absolute_pressure": field(le16(packet, 0x36) * 0.1, "hPa", "validated", le16(packet, 0x36)),
+        "relative_pressure": field(le16(packet, 0x38) * 0.1, "hPa", "validated", le16(packet, 0x38)),
+        "wind_average": field(wind_average, "m/s", "validated", wind_average_raw),
+        "wind_gust": field(gust_raw * 0.00625, "m/s", "validated", gust_raw),
+        "wind_direction": field(direction_raw, "degrees", "validated", direction_raw),
         "rain_last_hour": field(decode_rain(le16(packet, 0x3F), {0xA7FA}), "mm", "provisional", le16(packet, 0x3F)),
         "rain_today": field(decode_rain(le16(packet, 0x41), {0x7FA7}), "mm", "provisional", le16(packet, 0x41)),
         "rain_week": field(decode_rain(le16(packet, 0x43), {0xFAA7}), "mm", "provisional", le16(packet, 0x43)),
         "rain_month": field(decode_rain(le16(packet, 0x45), set()), "mm", "provisional", le16(packet, 0x45)),
         "rain_total": field(le16(packet, 0x48) * 0.1, "mm", "provisional", le16(packet, 0x48)),
-        "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived"),
-        "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived"),
+        "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived_validated"),
+        "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived_validated"),
     }
     return {
         "packet_length": len(packet),
@@ -154,7 +151,9 @@ def plain_reading(reading: dict[str, Any]) -> str:
         [
             f"out {value_text(fields['outdoor_temperature'])}, {value_text(fields['outdoor_humidity'], 0)}",
             f"in {value_text(fields['indoor_temperature'])}, {value_text(fields['indoor_humidity'], 0)}",
-            f"p? {value_text(fields['pressure_at_0x36'])}",
+            f"pressure {value_text(fields['relative_pressure'])}",
+            f"gust {value_text(fields['wind_gust'])}",
+            f"direction {value_text(fields['wind_direction'], 0)}",
             f"wind? {value_text(fields['wind_average'])}",
         ]
     )
@@ -191,8 +190,8 @@ class Dashboard:
     def draw(self) -> None:
         self.screen.erase()
         rows, cols = self.screen.getmaxyx()
-        if rows < 20 or cols < 72:
-            self.screen.addnstr(0, 0, "Terminal needs at least 72 columns and 20 rows.", max(1, cols - 1))
+        if rows < 21 or cols < 72:
+            self.screen.addnstr(0, 0, "Terminal needs at least 72 columns and 21 rows.", max(1, cols - 1))
             self.screen.refresh()
             return
         age = "never" if not self.last_success else f"{time.time() - self.last_success:.1f}s ago"
@@ -208,17 +207,17 @@ class Dashboard:
         self.screen.addstr(4, 0, "Validated readings", curses.A_BOLD)
         self._row(5, "Outdoor temperature", value_text(fields["outdoor_temperature"]), "Outdoor humidity", value_text(fields["outdoor_humidity"], 0))
         self._row(6, "Indoor temperature", value_text(fields["indoor_temperature"]), "Indoor humidity", value_text(fields["indoor_humidity"], 0))
-        self.screen.addstr(8, 0, "Provisional / conflicting readings", curses.A_BOLD)
-        self._row(9, "Pressure @ 0x36", value_text(fields["pressure_at_0x36"]), "Pressure @ 0x38", value_text(fields["pressure_at_0x38"]))
-        self._row(10, "Wind average", value_text(fields["wind_average"]), "Gust x 0.1", value_text(fields["wind_gust_scale_0_1"]))
-        self._row(11, "Gust x .00625", value_text(fields["wind_gust_scale_0_00625"]), "Direction byte", value_text(fields["wind_direction_byte"], 0))
-        self._row(12, "Direction LE16", value_text(fields["wind_direction_le16"], 0), "Rain last hour", value_text(fields["rain_last_hour"]))
-        self._row(13, "Rain today", value_text(fields["rain_today"]), "Rain week", value_text(fields["rain_week"]))
-        self._row(14, "Rain month", value_text(fields["rain_month"]), "Rain total", value_text(fields["rain_total"]))
-        self._row(15, "Dew point", value_text(fields["dew_point"]), "Feels like", value_text(fields["feels_like"]))
-        self.screen.addstr(17, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}")
+        self._row(7, "Relative pressure", value_text(fields["relative_pressure"]), "Dew point", value_text(fields["dew_point"]))
+        self._row(8, "Absolute pressure", value_text(fields["absolute_pressure"]), "Feels like", value_text(fields["feels_like"]))
+        self._row(9, "Wind gust", value_text(fields["wind_gust"]), "Wind direction", value_text(fields["wind_direction"], 0))
+        self._row(10, "Wind average", value_text(fields["wind_average"]), "", "")
+        self.screen.addstr(12, 0, "Provisional readings", curses.A_BOLD)
+        self._row(13, "Rain last hour", value_text(fields["rain_last_hour"]), "Rain today", value_text(fields["rain_today"]))
+        self._row(14, "Rain week", value_text(fields["rain_week"]), "Rain month", value_text(fields["rain_month"]))
+        self._row(15, "Rain total", value_text(fields["rain_total"]), "", "")
+        self.screen.addstr(18, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}")
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
-        self.screen.addnstr(18, 0, f"Changed bytes: {changes}  Output: {self.output}", cols - 1)
+        self.screen.addnstr(19, 0, f"Changed bytes: {changes}  Output: {self.output}", cols - 1)
         if self.raw_visible:
             self.screen.addnstr(20, 0, f"Packet: {self.last_packet}", cols - 1)
         self.screen.refresh()

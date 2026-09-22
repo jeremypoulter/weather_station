@@ -300,3 +300,29 @@ decoder with packet fixtures and integrate the confirmed command into long-run
 capture tooling. The bounded reader already rejects invalid lengths, truncated
 packets, bad checksums and unexpected response codes. Offline framing checks
 and a live five-sample run passed.
+
+### Display verification update, 2026-09-20
+
+The owner reported the console values as relative pressure **1019.5 hPa**,
+dew point **5.8 C**, feels like **15.1 C**, gust **0**, and wind direction
+**E** (expected 90 degrees). The timestamp recorded for the report is
+2026-09-20 18:31:20 UTC. A fresh USB capture could not be taken because an
+existing `ft0203_usb_read.py` process held the device open; its run was not
+interrupted.
+
+This validates `LE16(0x38) / 10` as the **relative pressure** field. The owner
+subsequently confirmed that the live reader's Magnus dew-point calculation and
+feels-like calculation matched the console at the time of the report. They are
+therefore displayed as validated derived values. Gust and direction remain
+unresolved because the reported zero gust and east direction do not distinguish
+the competing representations.
+
+### Wind verification update, 2026-09-20
+
+The owner subsequently confirmed a live reader value of **270 degrees** for
+`LE16(0x3d)` and **2.6 m/s** for `LE16(0x3b) * 0.00625`, matching the console.
+Wind direction and gust are therefore validated. Average wind at `0x3a`
+is also validated by a later owner comparison. The adjacent `0x36` and `0x38`
+values are not competing encodings: the source driver identifies them as
+absolute and relative pressure respectively. The owner has now confirmed the
+absolute-pressure display, so both fields are validated.
