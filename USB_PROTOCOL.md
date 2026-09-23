@@ -92,6 +92,23 @@ The high nibble of each temperature raw value is masked because it contains
 status or transmission metadata, not temperature magnitude. Its exact bit
 layout is not decoded.
 
+## Unknown-Field Capture
+
+For every current-reading packet, `ft0203_usb_read.py` records all unassigned
+bytes individually in `unknown_bytes` and in these grouped `unknown_ranges`:
+
+```text
+0x02-0x06
+0x0c-0x15
+0x17-0x35
+```
+
+The tracker at `0x4a` is also retained as an unknown value. The record includes
+`unknown_changed_offsets`, a subset of the packet's full `changed_offsets` list
+that identifies changed unassigned bytes. The live TUI renders the same ranges
+and marks a range with `*` after a change. This is intended for long captures
+that may reveal time, status, archive-pointer, or sensor-link fields.
+
 ## Derived Values
 
 These are calculated by the reader rather than directly transmitted fields:

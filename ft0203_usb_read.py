@@ -28,6 +28,14 @@ CURRENT_COMMAND = 0x04
 REPORT_SIZE = 64
 CURRENT_PACKET_LENGTH = 76
 DEFAULT_INTERVAL_SECONDS = 16.0
+UNKNOWN_RANGES = (
+    (0x02, 0x06),
+    (0x0C, 0x15),
+    (0x17, 0x35),
+)
+UNKNOWN_OFFSETS = frozenset(
+    offset for start, end in UNKNOWN_RANGES for offset in range(start, end + 1)
+) | frozenset({0x4A})
 
 
 def validate_packet(data: bytes) -> bytes:
@@ -94,6 +102,16 @@ def field(value: float | int | None, unit: str, status: str, raw: int | None = N
     return {"value": value, "unit": unit, "status": status, "raw": raw}
 
 
+def unknown_packet_fields(packet: bytes) -> tuple[dict[str, int], dict[str, str]]:
+    """Return every unassigned byte and compact display ranges for long runs."""
+    unknown_bytes = {f"0x{offset:02x}": packet[offset] for offset in sorted(UNKNOWN_OFFSETS)}
+    unknown_ranges = {
+        f"0x{start:02x}-0x{end:02x}": packet[start:end + 1].hex()
+        for start, end in UNKNOWN_RANGES
+    }
+    return unknown_bytes, unknown_ranges
+
+
 def decode_current_packet(packet: bytes) -> dict[str, Any]:
     """Decode confirmed values and clearly labelled reference candidates."""
     if len(packet) != CURRENT_PACKET_LENGTH or packet[1] != CURRENT_COMMAND:
@@ -127,11 +145,14 @@ def decode_current_packet(packet: bytes) -> dict[str, Any]:
         "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived_validated"),
         "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived_validated"),
     }
+    unknown_bytes, unknown_ranges = unknown_packet_fields(packet)
     return {
         "packet_length": len(packet),
         "response_code": packet[1],
         "header_hex": packet[:4].hex(),
         "tracker_raw": le16(packet, 0x4A),
+        "unknown_bytes": unknown_bytes,
+        "unknown_ranges": unknown_ranges,
         "fields": fields,
     }
 
@@ -190,8 +211,8 @@ class Dashboard:
     def draw(self) -> None:
         self.screen.erase()
         rows, cols = self.screen.getmaxyx()
-        if rows < 21 or cols < 72:
-            self.screen.addnstr(0, 0, "Terminal needs at least 72 columns and 21 rows.", max(1, cols - 1))
+        if rows < 23 or cols < 72:
+            self.screen.addnstr(0, 0, "Terminal needs at least 72 columns and 23 rows.", max(1, cols - 1))
             self.screen.refresh()
             return
         age = "never" if not self.last_success else f"{time.time() - self.last_success:.1f}s ago"
@@ -210,15 +231,22 @@ class Dashboard:
         self._row(7, "Relative pressure", value_text(fields["relative_pressure"]), "Dew point", value_text(fields["dew_point"]))
         self._row(8, "Absolute pressure", value_text(fields["absolute_pressure"]), "Feels like", value_text(fields["feels_like"]))
         self._row(9, "Wind gust", value_text(fields["wind_gust"]), "Wind direction", value_text(fields["wind_direction"], 0))
-        self._row(10, "Wind average", value_text(fields["wind_average"]), "", "")
-        self._row(12, "Rain last hour", value_text(fields["rain_last_hour"]), "Rain today", value_text(fields["rain_today"]))
-        self._row(13, "Rain week", value_text(fields["rain_week"]), "Rain month", value_text(fields["rain_month"]))
-        self._row(14, "Rain total", value_text(fields["rain_total"]), "", "")
-        self.screen.addstr(18, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}")
+        self._row(10, "Wind average", value_text(fields["wind_average"]), "Rain last hour", value_text(fields["rain_last_hour"]))
+        self._row(11, "Rain today", value_text(fields["rain_today"]), "Rain week", value_text(fields["rain_week"]))
+        self._row(12, "Rain month", value_text(fields["rain_month"]), "Rain total", value_text(fields["rain_total"]))
+        self.screen.addstr(14, 0, "Unknown packet bytes (* changed since previous packet)", curses.A_BOLD)
+        for row, (start, end) in enumerate(UNKNOWN_RANGES, start=15):
+            label = f"0x{start:02x}-0x{end:02x}"
+            changed = any(start <= offset <= end for offset in self.last_reading["unknown_changed_offsets"])
+            marker = "*" if changed else " "
+            self.screen.addnstr(row, 2, f"{marker} {label}: {self.last_reading['unknown_ranges'][label]}", cols - 3)
+        tracker_changed = 0x4A in self.last_reading["unknown_changed_offsets"]
+        self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}{' *' if tracker_changed else ''}")
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
-        self.screen.addnstr(19, 0, f"Changed bytes: {changes}  Output: {self.output}", cols - 1)
+        self.screen.addnstr(20, 0, f"Changed bytes: {changes}", cols - 1)
+        self.screen.addnstr(21, 0, f"Output: {self.output}", cols - 1)
         if self.raw_visible:
-            self.screen.addnstr(20, 0, f"Packet: {self.last_packet}", cols - 1)
+            self.screen.addnstr(22, 0, f"Packet: {self.last_packet}", cols - 1)
         self.screen.refresh()
 
     def _row(self, row: int, left_name: str, left_value: str, right_name: str, right_value: str) -> None:
@@ -230,7 +258,7 @@ class Dashboard:
         if key in (ord("r"), ord("R")):
             self.raw_visible = not self.raw_visible
         elif key in (ord("h"), ord("H")):
-            self.error = "r toggles raw packet; Ctrl+C exits. Values marked provisional/conflicting need display checks."
+            self.error = "r toggles raw packet; * marks unknown bytes that changed; Ctrl+C exits."
         elif key in (ord("q"), ord("Q")):
             self.running = False
 
@@ -304,6 +332,9 @@ def run_reader(args: argparse.Namespace, dashboard: Dashboard | None = None) -> 
                     assert reading is not None
                     changed_offsets = [] if previous_packet is None else [
                         index for index, (old, new) in enumerate(zip(previous_packet, packet)) if old != new
+                    ]
+                    reading["unknown_changed_offsets"] = [
+                        offset for offset in changed_offsets if offset in UNKNOWN_OFFSETS
                     ]
                     emit("reading", sample=sample, packet_hex=packet.hex(),
                          changed_offsets=changed_offsets, **reading)

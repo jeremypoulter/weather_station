@@ -36,6 +36,9 @@ class FT0203USBReadTests(unittest.TestCase):
         self.assertEqual(readings[0]["fields"]["wind_average"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["rain_last_hour"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["rain_month"]["status"], "validated")
+        self.assertEqual(readings[0]["unknown_bytes"]["0x02"], 0x01)
+        self.assertIn("0x17-0x35", readings[0]["unknown_ranges"])
+        self.assertEqual(readings[0]["unknown_ranges"]["0x0c-0x15"], "7ffaa77ffaa77ffaa77f")
         self.assertAlmostEqual(readings[0]["fields"]["indoor_temperature"]["value"], 23.89, places=2)
         self.assertAlmostEqual(readings[0]["fields"]["outdoor_temperature"]["value"], 19.78, places=2)
 

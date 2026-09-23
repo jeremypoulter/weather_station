@@ -68,6 +68,12 @@ Controls:
 - `h`: show help
 - `q` or Ctrl+C: quit
 
+Below the verified measurements, the dashboard displays all currently unknown
+packet bytes in three hex ranges. A `*` marks a range whose bytes changed since
+the previous packet. These same values are recorded byte-by-byte as
+`unknown_bytes`, grouped as `unknown_ranges`, and tracked as
+`unknown_changed_offsets` in every `type=reading` NDJSON record.
+
 For line-oriented output:
 
 ```bash
@@ -81,6 +87,17 @@ Useful options:
 - `--interval 5`: request a current packet every five seconds
 - `--out capture.ndjson`: choose a new NDJSON output path
 - `--plain`: disable the dashboard; selected automatically when output is redirected
+
+For a 24-hour interactive capture, run the reader in a terminal that remains
+open:
+
+```bash
+python3 ft0203_usb_read.py --duration 86400
+```
+
+The default 16-second interval produces approximately 5,400 current-reading
+packets in 24 hours. Use Ctrl+C to finish early; the NDJSON file is flushed
+after every record.
 
 Each successful current packet emits a `type=reading` NDJSON record containing
 the original packet, changed offsets, raw field values, candidate decodes,
