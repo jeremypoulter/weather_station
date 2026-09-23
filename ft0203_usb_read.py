@@ -193,10 +193,26 @@ class Dashboard:
         self.last_success = 0.0
         self.raw_visible = False
         self.running = True
+        self.previous_reading: dict[str, Any] | None = None
         self.screen.nodelay(True)
         curses.curs_set(0)
+        self.up_attr = self.down_attr = self.changed_attr = curses.A_BOLD
+        if curses.has_colors():
+            curses.start_color()
+            try:
+                curses.use_default_colors()
+                background = -1
+            except curses.error:
+                background = curses.COLOR_BLACK
+            curses.init_pair(1, curses.COLOR_GREEN, background)
+            curses.init_pair(2, curses.COLOR_RED, background)
+            curses.init_pair(3, curses.COLOR_YELLOW, background)
+            self.up_attr = curses.color_pair(1) | curses.A_BOLD
+            self.down_attr = curses.color_pair(2) | curses.A_BOLD
+            self.changed_attr = curses.color_pair(3) | curses.A_BOLD
 
     def update(self, reading: dict[str, Any], packet: bytes, changed_offsets: list[int]) -> None:
+        self.previous_reading = self.last_reading
         self.last_reading = reading
         self.last_packet = packet.hex()
         self.changed_offsets = changed_offsets
@@ -225,23 +241,26 @@ class Dashboard:
             self.screen.refresh()
             return
         fields = self.last_reading["fields"]
-        self.screen.addstr(4, 0, "Validated readings", curses.A_BOLD)
-        self._row(5, "Outdoor temperature", value_text(fields["outdoor_temperature"]), "Outdoor humidity", value_text(fields["outdoor_humidity"], 0))
-        self._row(6, "Indoor temperature", value_text(fields["indoor_temperature"]), "Indoor humidity", value_text(fields["indoor_humidity"], 0))
-        self._row(7, "Relative pressure", value_text(fields["relative_pressure"]), "Dew point", value_text(fields["dew_point"]))
-        self._row(8, "Absolute pressure", value_text(fields["absolute_pressure"]), "Feels like", value_text(fields["feels_like"]))
-        self._row(9, "Wind gust", value_text(fields["wind_gust"]), "Wind direction", value_text(fields["wind_direction"], 0))
-        self._row(10, "Wind average", value_text(fields["wind_average"]), "Rain last hour", value_text(fields["rain_last_hour"]))
-        self._row(11, "Rain today", value_text(fields["rain_today"]), "Rain week", value_text(fields["rain_week"]))
-        self._row(12, "Rain month", value_text(fields["rain_month"]), "Rain total", value_text(fields["rain_total"]))
-        self.screen.addstr(14, 0, "Unknown packet bytes (* changed since previous packet)", curses.A_BOLD)
+        self.screen.addstr(4, 0, "Validated readings  (green = increased, red = decreased since previous packet)", curses.A_BOLD)
+        self._row(5, "Outdoor temperature", "outdoor_temperature", "Outdoor humidity", "outdoor_humidity", 1, 0)
+        self._row(6, "Indoor temperature", "indoor_temperature", "Indoor humidity", "indoor_humidity", 1, 0)
+        self._row(7, "Relative pressure", "relative_pressure", "Dew point", "dew_point")
+        self._row(8, "Absolute pressure", "absolute_pressure", "Feels like", "feels_like")
+        self._row(9, "Wind gust", "wind_gust", "Wind direction", "wind_direction", 1, 0)
+        self._row(10, "Wind average", "wind_average", "Rain last hour", "rain_last_hour")
+        self._row(11, "Rain today", "rain_today", "Rain week", "rain_week")
+        self._row(12, "Rain month", "rain_month", "Rain total", "rain_total")
+        self.screen.addstr(14, 0, "Unknown packet bytes (* / yellow = changed since previous packet)", curses.A_BOLD)
         for row, (start, end) in enumerate(UNKNOWN_RANGES, start=15):
             label = f"0x{start:02x}-0x{end:02x}"
             changed = any(start <= offset <= end for offset in self.last_reading["unknown_changed_offsets"])
             marker = "*" if changed else " "
-            self.screen.addnstr(row, 2, f"{marker} {label}: {self.last_reading['unknown_ranges'][label]}", cols - 3)
+            self.screen.addnstr(row, 2, f"{marker} {label}: {self.last_reading['unknown_ranges'][label]}", cols - 3,
+                                self.changed_attr if changed else curses.A_NORMAL)
         tracker_changed = 0x4A in self.last_reading["unknown_changed_offsets"]
-        self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  Tracker: 0x{self.last_reading['tracker_raw']:04x}{' *' if tracker_changed else ''}")
+        self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  ")
+        self.screen.addstr(f"Tracker: 0x{self.last_reading['tracker_raw']:04x}{' *' if tracker_changed else ''}",
+                           self.changed_attr if tracker_changed else curses.A_NORMAL)
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
         self.screen.addnstr(20, 0, f"Changed bytes: {changes}", cols - 1)
         self.screen.addnstr(21, 0, f"Output: {self.output}", cols - 1)
@@ -249,9 +268,24 @@ class Dashboard:
             self.screen.addnstr(22, 0, f"Packet: {self.last_packet}", cols - 1)
         self.screen.refresh()
 
-    def _row(self, row: int, left_name: str, left_value: str, right_name: str, right_value: str) -> None:
-        self.screen.addstr(row, 2, f"{left_name:<22} {left_value:<16}")
-        self.screen.addstr(row, 43, f"{right_name:<20} {right_value}")
+    def _trend_attr(self, key: str) -> int:
+        """Green if the value rose since the previous packet, red if it fell."""
+        if self.previous_reading is None or self.last_reading is None:
+            return curses.A_NORMAL
+        new = self.last_reading["fields"][key]["value"]
+        old = self.previous_reading["fields"][key]["value"]
+        if new is None or old is None or new == old:
+            return curses.A_NORMAL
+        return self.up_attr if new > old else self.down_attr
+
+    def _row(self, row: int, left_name: str, left_key: str, right_name: str, right_key: str,
+             left_precision: int = 1, right_precision: int = 1) -> None:
+        assert self.last_reading is not None
+        fields = self.last_reading["fields"]
+        self.screen.addstr(row, 2, f"{left_name:<22} ")
+        self.screen.addstr(f"{value_text(fields[left_key], left_precision):<16}", self._trend_attr(left_key))
+        self.screen.addstr(row, 43, f"{right_name:<20} ")
+        self.screen.addstr(value_text(fields[right_key], right_precision), self._trend_attr(right_key))
 
     def handle_keys(self) -> None:
         key = self.screen.getch()

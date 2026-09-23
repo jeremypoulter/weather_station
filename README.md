@@ -69,8 +69,10 @@ Controls:
 - `q` or Ctrl+C: quit
 
 Below the verified measurements, the dashboard displays all currently unknown
-packet bytes in three hex ranges. A `*` marks a range whose bytes changed since
-the previous packet. These same values are recorded byte-by-byte as
+packet bytes in three hex ranges. A `*` and yellow highlight mark a range whose
+bytes changed since the previous packet. Measured values are shown in green
+when they increased and red when they decreased since the previous packet.
+These same unknown values are recorded byte-by-byte as
 `unknown_bytes`, grouped as `unknown_ranges`, and tracked as
 `unknown_changed_offsets` in every `type=reading` NDJSON record.
 
