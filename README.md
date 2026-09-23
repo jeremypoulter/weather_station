@@ -69,8 +69,9 @@ Controls:
 - `q` or Ctrl+C: quit
 
 Below the verified measurements, the dashboard displays all currently unknown
-packet bytes in three hex ranges. A `*` and yellow highlight mark a range whose
-bytes changed since the previous packet. Measured values are shown in green
+packet bytes in three hex ranges. A `*` marks a range containing a change, and
+each individual byte that changed since the previous packet is highlighted in
+yellow. Measured values are shown in green
 when they increased and red when they decreased since the previous packet.
 These same unknown values are recorded byte-by-byte as
 `unknown_bytes`, grouped as `unknown_ranges`, and tracked as

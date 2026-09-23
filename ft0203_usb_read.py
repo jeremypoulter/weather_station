@@ -250,13 +250,19 @@ class Dashboard:
         self._row(10, "Wind average", "wind_average", "Rain last hour", "rain_last_hour")
         self._row(11, "Rain today", "rain_today", "Rain week", "rain_week")
         self._row(12, "Rain month", "rain_month", "Rain total", "rain_total")
-        self.screen.addstr(14, 0, "Unknown packet bytes (* / yellow = changed since previous packet)", curses.A_BOLD)
+        self.screen.addstr(14, 0, "Unknown packet bytes (* = range changed, yellow = changed byte)", curses.A_BOLD)
         for row, (start, end) in enumerate(UNKNOWN_RANGES, start=15):
             label = f"0x{start:02x}-0x{end:02x}"
-            changed = any(start <= offset <= end for offset in self.last_reading["unknown_changed_offsets"])
+            changed_set = set(self.last_reading["unknown_changed_offsets"])
+            changed = any(start <= offset <= end for offset in changed_set)
             marker = "*" if changed else " "
-            self.screen.addnstr(row, 2, f"{marker} {label}: {self.last_reading['unknown_ranges'][label]}", cols - 3,
-                                self.changed_attr if changed else curses.A_NORMAL)
+            self.screen.addstr(row, 2, f"{marker} {label}: ")
+            hex_text = self.last_reading["unknown_ranges"][label]
+            for index, offset in enumerate(range(start, end + 1)):
+                if self.screen.getyx()[1] + 2 >= cols:
+                    break
+                attr = self.changed_attr if offset in changed_set else curses.A_NORMAL
+                self.screen.addstr(hex_text[index * 2:index * 2 + 2], attr)
         tracker_changed = 0x4A in self.last_reading["unknown_changed_offsets"]
         self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  ")
         self.screen.addstr(f"Tracker: 0x{self.last_reading['tracker_raw']:04x}{' *' if tracker_changed else ''}",
