@@ -68,13 +68,19 @@ bytes, so they are offsets into the full 76-byte application packet.
 |---|---:|---|---|---|
 | `0x00` | 1 | packet length | Always `0x4c` for current record | verified |
 | `0x01` | 1 | response command | Always `0x04` for current record | verified |
-| `0x02-0x06` | 5 | header/unknown | Current captures start `01 01 3f 00 00` or similar | unknown |
+| `0x02-0x03` | 2 | header | Always `01 01` | unknown |
+| `0x04` | 1 | sensor-presence mask (candidate) | `0x3f` before rain gauge registration, `0x7f` after | provisional |
+| `0x05-0x06` | 2 | unknown | Always `00 00` | unknown |
 | `0x07` | 2 LE | indoor temperature raw | `((raw & 0x0fff) - 400) / 10` F, then convert to C | verified |
 | `0x09` | 1 | indoor humidity | percent | verified |
-| `0x0a` | 2 LE | outdoor temperature raw | same formula as indoor temperature | verified |
-| `0x0c-0x15` | 10 | unknown | Not assigned | unknown |
-| `0x16` | 1 | outdoor humidity | percent | verified |
-| `0x17-0x35` | 31 | unknown | Not assigned | unknown |
+| `0x0a` | 1.5 | outdoor temperature (CH1) | 12-bit packed, same formula as indoor temperature | verified |
+| `0x0b-0x15` | 10.5 | temperature, CH2-CH8 | seven more 12-bit packed slots; `0x7fa` = no sensor | structure inferred |
+| `0x16` | 1 | outdoor humidity (CH1) | percent | verified |
+| `0x17-0x1d` | 7 | humidity, CH2-CH8 | `0x7a` (122) = no sensor | structure inferred |
+| `0x1e` | 1.5 | console dew point (CH1) | 12-bit packed, temperature formula | decoded |
+| `0x1f-0x29` | 10.5 | dew point, CH2-CH8 | `0x7fa` = no sensor | structure inferred |
+| `0x2a` | 1.5 | console feels-like (CH1) | 12-bit packed, temperature formula | decoded |
+| `0x2b-0x35` | 10.5 | feels-like, CH2-CH8 | `0x7fa` = no sensor | structure inferred |
 | `0x36` | 2 LE | absolute pressure | `raw * 0.1` hPa | verified |
 | `0x38` | 2 LE | relative pressure | `raw * 0.1` hPa | verified |
 | `0x3a` | 1 | average wind speed | `raw * 0.1` m/s | verified |
@@ -85,29 +91,58 @@ bytes, so they are offsets into the full 76-byte application packet.
 | `0x43` | 2 LE | rainfall, week | `raw * 0.1` mm | verified |
 | `0x45` | 2 LE | rainfall, month | `(raw >> 4) * 0.1` mm | verified |
 | `0x48` | 2 LE | rainfall, total | `raw * 0.1` mm | verified |
-| `0x4a` | 2 LE | tracker/sequence candidate | Changes between records | unknown |
+| `0x4a` | 1 | unknown | Always `0x00` in captures to date | unknown |
 | `0x4b` | 1 | additive checksum | packet checksum | verified |
 
-The high nibble of each temperature raw value is masked because it contains
-status or transmission metadata, not temperature magnitude. Its exact bit
-layout is not decoded.
+The high nibble of each temperature raw value is masked because the values are
+**nibble-packed 12-bit fields**: consecutive values share a byte, so the upper
+nibble belongs to the neighbouring slot. With no extra sensor present, a slot
+reads `0x7fa`, which produces the repeating `7f fa a7` byte pattern.
+
+### Multi-channel blocks and console-computed values (2026-09-24 capture)
+
+The console supports thermometer/hygrometer channels CH1-CH8. A 24-hour capture
+(`ft0203_unknown_24h.ndjson`, 5,382 packets, 2026-09-23 17:22 to 2026-09-24
+17:22 UTC) shows four 8-slot blocks, one slot per channel:
+
+| Block | Contents | Slot format |
+|---|---|---|
+| `0x0a-0x15` | temperature CH1-CH8 | 12-bit packed |
+| `0x16-0x1d` | humidity CH1-CH8 | 1 byte, `0x7a` = no sensor |
+| `0x1e-0x29` | dew point CH1-CH8 | 12-bit packed |
+| `0x2a-0x35` | feels-like CH1-CH8 | 12-bit packed |
+
+Only CH1 is populated. Over 24 hours the only changing unassigned bytes were
+`0x1e`, `0x2a` and `0x2b`. Decoding `0x1e` and `0x2a` with the temperature
+formula reproduces the reader's calculated dew point (mean error +0.03 C, max
+0.15 C) and feels-like (mean +0.005 C, max 0.28 C) across every packet. So the
+console transmits its own dew point and feels-like values. The small differences
+come from the console's 0.1 F resolution. `0x2b` changes only as the high nibble
+of the feels-like value; it is not a separate field.
+
+### Sensor-presence byte `0x04`
+
+Byte `0x04` was `0x3f` in every capture until 2026-09-22 10:34:36 UTC, and `0x7f`
+afterwards. The change happened in the same packet in which rain data first
+appeared (rain total 0.0 to 2.1 mm), when the rain gauge was paired. That makes
+it a strong candidate for a sensor-presence or link bitmask: bit 6 (`0x40`) is
+likely the rain gauge. The meaning of the remaining bits is unconfirmed. Test it
+by removing a sensor's batteries and watching for the matching bit to clear.
 
 ## Unknown-Field Capture
 
-For every current-reading packet, `ft0203_usb_read.py` records all unassigned
-bytes individually in `unknown_bytes` and in these grouped `unknown_ranges`:
+For every current-reading packet, `ft0203_usb_read.py` records the
+still-unexplained header bytes `0x02-0x06` individually in `unknown_bytes` and
+as `unknown_ranges`, along with the unused CH2-CH8 slot blocks as
+`channel_slots`. Decoded fields `station_dew_point`, `station_feels_like` and
+`sensor_mask` are included in `fields`.
 
-```text
-0x02-0x06
-0x0c-0x15
-0x17-0x35
-```
-
-The tracker at `0x4a` is also retained as an unknown value. The record includes
-`unknown_changed_offsets`, a subset of the packet's full `changed_offsets` list
-that identifies changed unassigned bytes. The live TUI renders the same ranges
-and marks a range with `*` after a change. This is intended for long captures
-that may reveal time, status, archive-pointer, or sensor-link fields.
+The tracker at `0x4a` is also retained as an unknown value. It was `0x00` for
+the whole 24-hour capture; earlier values such as `0x4400`/`0x5b00` came from
+reading `0x4a` as 16 bits, so its high byte was actually the checksum. The
+record includes `unknown_changed_offsets` and the full `changed_offsets` list.
+The live TUI shows the watched ranges, marks a range containing a change with
+`*`, and highlights each changed byte in yellow.
 
 ## Derived Values
 
@@ -115,8 +150,8 @@ These are calculated by the reader rather than directly transmitted fields:
 
 | Value | Inputs | Status |
 |---|---|---|
-| Dew point | outdoor temperature and humidity; Magnus formula | display-validated |
-| Feels-like temperature | outdoor temperature, humidity, average wind; wind-chill/heat-index calculation | display-validated |
+| Dew point | outdoor temperature and humidity; Magnus formula | display-validated; matches console value at `0x1e` |
+| Feels-like temperature | outdoor temperature, humidity, average wind; wind-chill/heat-index calculation | display-validated; matches console value at `0x2a` |
 
 ## Sensor Status, Battery, and RSSI
 

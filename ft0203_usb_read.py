@@ -30,12 +30,23 @@ CURRENT_PACKET_LENGTH = 76
 DEFAULT_INTERVAL_SECONDS = 16.0
 UNKNOWN_RANGES = (
     (0x02, 0x06),
-    (0x0C, 0x15),
-    (0x17, 0x35),
 )
 UNKNOWN_OFFSETS = frozenset(
     offset for start, end in UNKNOWN_RANGES for offset in range(start, end + 1)
 ) | frozenset({0x4A})
+# Nibble-packed 12-bit slots for extra thermometer channels (2-8) and their
+# humidity bytes. They read 0x7fa / 0x7a ("no sensor") on this station.
+CHANNEL_SLOT_RANGES = (
+    (0x0C, 0x15),
+    (0x17, 0x1D),
+    (0x1F, 0x29),
+    (0x2B, 0x35),
+)
+
+
+def packed12(packet: bytes, offset: int) -> int:
+    """First 12-bit value of a nibble-packed block (same layout as temperatures)."""
+    return le16(packet, offset) & 0x0FFF
 
 
 def validate_packet(data: bytes) -> bytes:
@@ -144,15 +155,22 @@ def decode_current_packet(packet: bytes) -> dict[str, Any]:
         "rain_total": field(le16(packet, 0x48) * 0.1, "mm", "validated", le16(packet, 0x48)),
         "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived_validated"),
         "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived_validated"),
+        "station_dew_point": field(fahrenheit_tenths_to_celsius(packed12(packet, 0x1E)), "C", "decoded", packed12(packet, 0x1E)),
+        "station_feels_like": field(fahrenheit_tenths_to_celsius(packed12(packet, 0x2A)), "C", "decoded", packed12(packet, 0x2A)),
+        "sensor_mask": field(packet[0x04], "", "provisional", packet[0x04]),
     }
     unknown_bytes, unknown_ranges = unknown_packet_fields(packet)
     return {
         "packet_length": len(packet),
         "response_code": packet[1],
         "header_hex": packet[:4].hex(),
-        "tracker_raw": le16(packet, 0x4A),
+        "tracker_raw": packet[0x4A],
         "unknown_bytes": unknown_bytes,
         "unknown_ranges": unknown_ranges,
+        "channel_slots": {
+            f"0x{start:02x}-0x{end:02x}": packet[start:end + 1].hex()
+            for start, end in CHANNEL_SLOT_RANGES
+        },
         "fields": fields,
     }
 
@@ -227,8 +245,8 @@ class Dashboard:
     def draw(self) -> None:
         self.screen.erase()
         rows, cols = self.screen.getmaxyx()
-        if rows < 23 or cols < 72:
-            self.screen.addnstr(0, 0, "Terminal needs at least 72 columns and 23 rows.", max(1, cols - 1))
+        if rows < 23 or cols < 82:
+            self.screen.addnstr(0, 0, "Terminal needs at least 82 columns and 23 rows.", max(1, cols - 1))
             self.screen.refresh()
             return
         age = "never" if not self.last_success else f"{time.time() - self.last_success:.1f}s ago"
@@ -250,22 +268,28 @@ class Dashboard:
         self._row(10, "Wind average", "wind_average", "Rain last hour", "rain_last_hour")
         self._row(11, "Rain today", "rain_today", "Rain week", "rain_week")
         self._row(12, "Rain month", "rain_month", "Rain total", "rain_total")
-        self.screen.addstr(14, 0, "Unknown packet bytes (* = range changed, yellow = changed byte)", curses.A_BOLD)
-        for row, (start, end) in enumerate(UNKNOWN_RANGES, start=15):
-            label = f"0x{start:02x}-0x{end:02x}"
-            changed_set = set(self.last_reading["unknown_changed_offsets"])
+        self._row(13, "Console dew point", "station_dew_point", "Console feels like", "station_feels_like")
+        mask = fields["sensor_mask"]["value"]
+        self.screen.addstr(14, 0, "Unknown / status bytes (* = range changed, yellow = changed byte)", curses.A_BOLD)
+        self.screen.addstr(14, 66, f"Sensor mask 0x{mask:02x}", self._trend_attr("sensor_mask"))
+        watched = [(f"0x{s:02x}-0x{e:02x}", s, e, self.last_reading["unknown_ranges"])
+                   for s, e in UNKNOWN_RANGES]
+        watched += [(f"0x{s:02x}-0x{e:02x}", s, e, self.last_reading["channel_slots"])
+                    for s, e in CHANNEL_SLOT_RANGES]
+        changed_set = set(self.changed_offsets)
+        for index, (label, start, end, source) in enumerate(watched):
+            row, column = 15 + index // 2, 2 + (index % 2) * 40
             changed = any(start <= offset <= end for offset in changed_set)
-            marker = "*" if changed else " "
-            self.screen.addstr(row, 2, f"{marker} {label}: ")
-            hex_text = self.last_reading["unknown_ranges"][label]
-            for index, offset in enumerate(range(start, end + 1)):
-                if self.screen.getyx()[1] + 2 >= cols:
+            self.screen.addstr(row, column, f"{'*' if changed else ' '} {label}: ")
+            hex_text = source[label]
+            for position, offset in enumerate(range(start, end + 1)):
+                if self.screen.getyx()[1] + 2 >= min(cols, column + 40):
                     break
                 attr = self.changed_attr if offset in changed_set else curses.A_NORMAL
-                self.screen.addstr(hex_text[index * 2:index * 2 + 2], attr)
+                self.screen.addstr(hex_text[position * 2:position * 2 + 2], attr)
         tracker_changed = 0x4A in self.last_reading["unknown_changed_offsets"]
         self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  ")
-        self.screen.addstr(f"Tracker: 0x{self.last_reading['tracker_raw']:04x}{' *' if tracker_changed else ''}",
+        self.screen.addstr(f"Byte 0x4a: 0x{self.last_reading['tracker_raw']:02x}{' *' if tracker_changed else ''}",
                            self.changed_attr if tracker_changed else curses.A_NORMAL)
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
         self.screen.addnstr(20, 0, f"Changed bytes: {changes}", cols - 1)

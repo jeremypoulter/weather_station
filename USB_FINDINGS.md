@@ -344,3 +344,35 @@ The owner reported the same display values: 12.3 mm for one hour and 22.2 mm
 for every other displayed rain period. This validates all five rain fields.
 The hour/day/week fields use direct tenths; the earlier reference's right-shift
 formula for those three fields is incorrect for this station.
+
+### 24-hour unknown-field capture, 2026-09-23 to 2026-09-24
+
+Capture: `ft0203_unknown_24h.ndjson`. It contains 5,382 current-reading packets
+from 17:22:36 to 17:22:30 UTC with zero exchange errors.
+
+Across the day, only three unassigned bytes changed: `0x1e` (680 changes),
+`0x2a` (626) and `0x2b` (4). All other unknown bytes stayed constant, including
+the whole repeating `7f fa a7` / `7a` pattern. Findings:
+
+- The station's current record holds **four 8-slot channel blocks** for
+  thermometer/hygrometer channels CH1-CH8: temperature (`0x0a`), humidity
+  (`0x16`), dew point (`0x1e`) and feels-like (`0x2a`). Temperature-type values
+  are nibble-packed 12-bit fields. Unused slots read `0x7fa` (12-bit) or `0x7a`
+  (humidity). This explains why the old temperature decode had to mask the high
+  nibble.
+- `0x1e` is the console's own **dew point** and `0x2a` is its own **feels-like**
+  temperature, in the same 0.1 F encoding. Against the reader's calculated
+  values, the differences are mean +0.034 C / max 0.147 C (dew point) and mean
+  +0.005 C / max 0.278 C (feels-like) over every packet. `0x2b` changes only as
+  the high nibble of the packed feels-like value, including when feels-like
+  crossed about 31 C.
+- `0x04` changed from `0x3f` to `0x7f` at 2026-09-22 10:34:36 UTC. That is the
+  packet in which rain data first appeared after the rain gauge was paired
+  (rain total 0.0 to 2.1 mm). It is most likely a sensor-presence bitmask with
+  bit 6 = rain gauge; still to be confirmed.
+- `0x4a` stayed `0x00`. The earlier "tracker" that appeared to change was a
+  16-bit read whose high byte was the checksum at `0x4b`.
+
+Still unexplained: header bytes `0x02-0x03` (`01 01`) and `0x05-0x06` (`00 00`).
+They are constant so far; possible meanings include protocol version, channel
+count, or battery/alarm flags that were never set during the capture.

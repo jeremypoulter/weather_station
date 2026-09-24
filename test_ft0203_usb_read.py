@@ -37,8 +37,14 @@ class FT0203USBReadTests(unittest.TestCase):
         self.assertEqual(readings[0]["fields"]["rain_last_hour"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["rain_month"]["status"], "validated")
         self.assertEqual(readings[0]["unknown_bytes"]["0x02"], 0x01)
-        self.assertIn("0x17-0x35", readings[0]["unknown_ranges"])
-        self.assertEqual(readings[0]["unknown_ranges"]["0x0c-0x15"], "7ffaa77ffaa77ffaa77f")
+        self.assertEqual(readings[0]["unknown_ranges"]["0x02-0x06"], "01013f0000")
+        self.assertEqual(readings[0]["channel_slots"]["0x0c-0x15"], "7ffaa77ffaa77ffaa77f")
+        # The console reports its own dew point and feels-like in the 12-bit
+        # Fahrenheit format; they agree with the calculated values.
+        fields = readings[0]["fields"]
+        self.assertAlmostEqual(fields["station_dew_point"]["value"], fields["dew_point"]["value"], delta=0.3)
+        self.assertAlmostEqual(fields["station_feels_like"]["value"], fields["feels_like"]["value"], delta=0.3)
+        self.assertEqual(fields["sensor_mask"]["value"], 0x3F)  # captured before rain gauge pairing
         self.assertAlmostEqual(readings[0]["fields"]["indoor_temperature"]["value"], 23.89, places=2)
         self.assertAlmostEqual(readings[0]["fields"]["outdoor_temperature"]["value"], 19.78, places=2)
 
