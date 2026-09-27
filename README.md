@@ -70,7 +70,7 @@ Controls:
 - `q` or Ctrl+C: quit
 
 Below the verified measurements, the dashboard shows the console's own dew
-point and feels-like values, the candidate sensor-presence byte (`0x04`), the
+point and feels-like values, the candidate sensor-presence byte (`0x04`) broken down into bits with bit 6 labelled as the rain gauge, the
 still-unexplained header bytes `0x02-0x06`, and the unused CH2-CH8 channel
 slots. A `*` marks a range containing a change, and each individual byte that
 changed since the previous packet is highlighted in yellow. Measured values are

@@ -34,6 +34,8 @@ UNKNOWN_RANGES = (
 UNKNOWN_OFFSETS = frozenset(
     offset for start, end in UNKNOWN_RANGES for offset in range(start, end + 1)
 ) | frozenset({0x4A})
+# Byte 0x04 bits with a known meaning. Bit 6 set when the rain gauge was paired.
+SENSOR_MASK_BITS = {6: "rain(b6)"}
 # Nibble-packed 12-bit slots for extra thermometer channels (2-8) and their
 # humidity bytes. They read 0x7fa / 0x7a ("no sensor") on this station.
 CHANNEL_SLOT_RANGES = (
@@ -269,9 +271,8 @@ class Dashboard:
         self._row(11, "Rain today", "rain_today", "Rain week", "rain_week")
         self._row(12, "Rain month", "rain_month", "Rain total", "rain_total")
         self._row(13, "Console dew point", "station_dew_point", "Console feels like", "station_feels_like")
-        mask = fields["sensor_mask"]["value"]
         self.screen.addstr(14, 0, "Unknown / status bytes (* = range changed, yellow = changed byte)", curses.A_BOLD)
-        self.screen.addstr(14, 66, f"Sensor mask 0x{mask:02x}", self._trend_attr("sensor_mask"))
+        self._draw_sensor_mask(18)
         watched = [(f"0x{s:02x}-0x{e:02x}", s, e, self.last_reading["unknown_ranges"])
                    for s, e in UNKNOWN_RANGES]
         watched += [(f"0x{s:02x}-0x{e:02x}", s, e, self.last_reading["channel_slots"])
@@ -297,6 +298,19 @@ class Dashboard:
         if self.raw_visible:
             self.screen.addnstr(22, 0, f"Packet: {self.last_packet}", cols - 1)
         self.screen.refresh()
+
+    def _draw_sensor_mask(self, row: int) -> None:
+        """Show byte 0x04 bit by bit; changed bits are yellow."""
+        assert self.last_reading is not None
+        mask = self.last_reading["fields"]["sensor_mask"]["value"]
+        previous = None if self.previous_reading is None else self.previous_reading["fields"]["sensor_mask"]["value"]
+        self.screen.addstr(row, 2, f"0x04 sensor mask 0x{mask:02x}:", curses.A_BOLD)
+        for bit in range(7, -1, -1):
+            name = SENSOR_MASK_BITS.get(bit, f"b{bit}")
+            value = (mask >> bit) & 1
+            changed = previous is not None and ((previous >> bit) & 1) != value
+            attr = self.changed_attr if changed else (curses.A_BOLD if bit in SENSOR_MASK_BITS else curses.A_NORMAL)
+            self.screen.addstr(f"  {name}={value}", attr)
 
     def _trend_attr(self, key: str) -> int:
         """Green if the value rose since the previous packet, red if it fell."""
