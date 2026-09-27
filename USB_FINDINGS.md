@@ -376,3 +376,19 @@ the whole repeating `7f fa a7` / `7a` pattern. Findings:
 Still unexplained: header bytes `0x02-0x03` (`01 01`) and `0x05-0x06` (`00 00`).
 They are constant so far; possible meanings include protocol version, channel
 count, or battery/alarm flags that were never set during the capture.
+
+### WeatherHome ID0040.dll parser scan, 2026-09-27
+
+The device-info model byte `0x40` selects `ID0040.dll`. Disassembling its
+`ReadMainRecord` resolves most of the remaining unknowns; see "WeatherHome
+Parser" in `USB_PROTOCOL.md`:
+
+- `0x02` and `0x03` are CH1-CH8 temperature and humidity presence flags.
+  `01 01` means only CH1 is present.
+- `0x04` is a sensor-flag byte. Bit 6 (rain) gates rain parsing, confirming the
+  pairing observation. The app also uses bits 0-3 and 5 (indoor T/H, wind
+  average, gust, pressure) to fetch history graphs.
+- Wind values are 12-bit and weekly/monthly/total rain are 20-bit. Re-decoding
+  all 5,382 packets of the 24-hour capture with these widths changes no value.
+- `0x05-0x06` are stored but never interpreted by the app.
+- The parser has no battery, RSSI or link-quality fields.

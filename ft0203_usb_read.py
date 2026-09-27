@@ -34,8 +34,19 @@ UNKNOWN_RANGES = (
 UNKNOWN_OFFSETS = frozenset(
     offset for start, end in UNKNOWN_RANGES for offset in range(start, end + 1)
 ) | frozenset({0x4A})
-# Byte 0x04 bits with a known meaning. Bit 6 set when the rain gauge was paired.
-SENSOR_MASK_BITS = {6: "rain(b6)"}
+# Byte 0x04 sensor flags, from WeatherHome ID0040.dll ReadMainRecord: each set bit
+# makes the app read that sensor's history graph; bit 6 also gates the rain fields.
+SENSOR_MASK_BITS = {
+    0: "in-T",
+    1: "in-H",
+    2: "wind",
+    3: "gust",
+    5: "press",
+    6: "rain",
+}
+INVALID_12BIT = 0x7FA    # temperature/wind values >= this mean "no data"
+INVALID_HUMIDITY = 0x7A  # humidity bytes >= this mean "no data"
+INVALID_PRESSURE = 0x7FFA
 # Nibble-packed 12-bit slots for extra thermometer channels (2-8) and their
 # humidity bytes. They read 0x7fa / 0x7a ("no sensor") on this station.
 CHANNEL_SLOT_RANGES = (
@@ -66,6 +77,22 @@ def validate_packet(data: bytes) -> bytes:
 
 def le16(packet: bytes, offset: int) -> int:
     return packet[offset] | (packet[offset + 1] << 8)
+
+
+def le32(packet: bytes, offset: int) -> int:
+    return int.from_bytes(packet[offset:offset + 4], "little")
+
+
+def temp12(raw: int) -> float | None:
+    return None if raw >= INVALID_12BIT else fahrenheit_tenths_to_celsius(raw)
+
+
+def humidity(raw: int) -> int | None:
+    return None if raw >= INVALID_HUMIDITY else raw
+
+
+def tenths(raw: int, invalid: int | None = None) -> float | None:
+    return None if invalid is not None and raw >= invalid else raw * 0.1
 
 
 def fahrenheit_tenths_to_celsius(raw: int) -> float:
@@ -132,34 +159,48 @@ def decode_current_packet(packet: bytes) -> dict[str, Any]:
 
     indoor_raw = le16(packet, 0x07) & 0x0FFF
     outdoor_raw = le16(packet, 0x0A) & 0x0FFF
-    indoor_temp = fahrenheit_tenths_to_celsius(indoor_raw)
-    outdoor_temp = fahrenheit_tenths_to_celsius(outdoor_raw)
-    indoor_humidity = packet[0x09]
-    outdoor_humidity = packet[0x16]
-    wind_average_raw = packet[0x3A]
-    wind_average = wind_average_raw * 0.1
-    gust_raw = le16(packet, 0x3B)
-    direction_raw = le16(packet, 0x3D)
+    indoor_temp = temp12(indoor_raw)
+    outdoor_temp = temp12(outdoor_raw)
+    indoor_humidity = humidity(packet[0x09])
+    outdoor_humidity = humidity(packet[0x16])
+    # Field widths follow WeatherHome's ID0040.dll parser: 12-bit wind values
+    # nibble-packed from 0x3a, and 20-bit week/month/total rain counters.
+    wind_average_raw = le16(packet, 0x3A) & 0x0FFF
+    wind_average = tenths(wind_average_raw, INVALID_12BIT)
+    gust_raw = le16(packet, 0x3B) >> 4
+    direction_raw = le16(packet, 0x3D) & 0x0FFF
+    rain_present = bool(packet[0x04] & 0x40)
+    rain_raw = {
+        "rain_last_hour": le16(packet, 0x3F),
+        "rain_today": le16(packet, 0x41),
+        "rain_week": le32(packet, 0x43) & 0xFFFFF,
+        "rain_month": (le32(packet, 0x45) >> 4) & 0xFFFFF,
+        "rain_total": le32(packet, 0x48) & 0xFFFFF,
+    }
+    outdoor_ok = outdoor_temp is not None and outdoor_humidity is not None
     fields = {
         "outdoor_temperature": field(outdoor_temp, "C", "validated", outdoor_raw),
-        "outdoor_humidity": field(outdoor_humidity, "%", "validated", outdoor_humidity),
+        "outdoor_humidity": field(outdoor_humidity, "%", "validated", packet[0x16]),
         "indoor_temperature": field(indoor_temp, "C", "validated", indoor_raw),
-        "indoor_humidity": field(indoor_humidity, "%", "validated", indoor_humidity),
-        "absolute_pressure": field(le16(packet, 0x36) * 0.1, "hPa", "validated", le16(packet, 0x36)),
-        "relative_pressure": field(le16(packet, 0x38) * 0.1, "hPa", "validated", le16(packet, 0x38)),
+        "indoor_humidity": field(indoor_humidity, "%", "validated", packet[0x09]),
+        "absolute_pressure": field(tenths(le16(packet, 0x36), INVALID_PRESSURE), "hPa", "validated", le16(packet, 0x36)),
+        "relative_pressure": field(tenths(le16(packet, 0x38), INVALID_PRESSURE), "hPa", "validated", le16(packet, 0x38)),
         "wind_average": field(wind_average, "m/s", "validated", wind_average_raw),
-        "wind_gust": field(gust_raw * 0.00625, "m/s", "validated", gust_raw),
-        "wind_direction": field(direction_raw, "degrees", "validated", direction_raw),
-        "rain_last_hour": field(decode_rain(le16(packet, 0x3F), {0xA7FA}), "mm", "validated", le16(packet, 0x3F)),
-        "rain_today": field(decode_rain(le16(packet, 0x41), {0x7FA7}), "mm", "validated", le16(packet, 0x41)),
-        "rain_week": field(decode_rain(le16(packet, 0x43), {0xFAA7}), "mm", "validated", le16(packet, 0x43)),
-        "rain_month": field(decode_rain(le16(packet, 0x45), set(), packed=True), "mm", "validated", le16(packet, 0x45)),
-        "rain_total": field(le16(packet, 0x48) * 0.1, "mm", "validated", le16(packet, 0x48)),
-        "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity), "C", "derived_validated"),
-        "feels_like": field(feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average), "C", "derived_validated"),
-        "station_dew_point": field(fahrenheit_tenths_to_celsius(packed12(packet, 0x1E)), "C", "decoded", packed12(packet, 0x1E)),
-        "station_feels_like": field(fahrenheit_tenths_to_celsius(packed12(packet, 0x2A)), "C", "decoded", packed12(packet, 0x2A)),
-        "sensor_mask": field(packet[0x04], "", "provisional", packet[0x04]),
+        "wind_gust": field(tenths(gust_raw, INVALID_12BIT), "m/s", "validated", gust_raw),
+        "wind_direction": field(None if direction_raw >= INVALID_12BIT else direction_raw, "degrees", "validated", direction_raw),
+        **{
+            name: field(raw * 0.1 if rain_present else None, "mm", "validated", raw)
+            for name, raw in rain_raw.items()
+        },
+        "dew_point": field(dew_point_celsius(outdoor_temp, outdoor_humidity) if outdoor_ok else None, "C", "derived_validated"),
+        "feels_like": field(
+            feels_like_celsius(outdoor_temp, outdoor_humidity, wind_average or 0.0) if outdoor_ok else None,
+            "C", "derived_validated"),
+        "station_dew_point": field(temp12(packed12(packet, 0x1E)), "C", "decoded", packed12(packet, 0x1E)),
+        "station_feels_like": field(temp12(packed12(packet, 0x2A)), "C", "decoded", packed12(packet, 0x2A)),
+        "sensor_mask": field(packet[0x04], "", "decoded", packet[0x04]),
+        "channel_temperature_flags": field(packet[0x02], "", "decoded", packet[0x02]),
+        "channel_humidity_flags": field(packet[0x03], "", "decoded", packet[0x03]),
     }
     unknown_bytes, unknown_ranges = unknown_packet_fields(packet)
     return {
@@ -292,6 +333,11 @@ class Dashboard:
         self.screen.addstr(19, 0, f"Header: {self.last_reading['header_hex']}  ")
         self.screen.addstr(f"Byte 0x4a: 0x{self.last_reading['tracker_raw']:02x}{' *' if tracker_changed else ''}",
                            self.changed_attr if tracker_changed else curses.A_NORMAL)
+        fields = self.last_reading["fields"]
+        self.screen.addstr(f"  CH1-8 temp flags 0x{fields['channel_temperature_flags']['value']:02x}",
+                           self._trend_attr("channel_temperature_flags"))
+        self.screen.addstr(f"  hum flags 0x{fields['channel_humidity_flags']['value']:02x}",
+                           self._trend_attr("channel_humidity_flags"))
         changes = ", ".join(f"0x{offset:02x}" for offset in self.changed_offsets) or "none"
         self.screen.addnstr(20, 0, f"Changed bytes: {changes}", cols - 1)
         self.screen.addnstr(21, 0, f"Output: {self.output}", cols - 1)
@@ -304,13 +350,13 @@ class Dashboard:
         assert self.last_reading is not None
         mask = self.last_reading["fields"]["sensor_mask"]["value"]
         previous = None if self.previous_reading is None else self.previous_reading["fields"]["sensor_mask"]["value"]
-        self.screen.addstr(row, 2, f"0x04 sensor mask 0x{mask:02x}:", curses.A_BOLD)
+        self.screen.addstr(row, 2, f"0x04 flags 0x{mask:02x}:", curses.A_BOLD)
         for bit in range(7, -1, -1):
             name = SENSOR_MASK_BITS.get(bit, f"b{bit}")
             value = (mask >> bit) & 1
             changed = previous is not None and ((previous >> bit) & 1) != value
             attr = self.changed_attr if changed else (curses.A_BOLD if bit in SENSOR_MASK_BITS else curses.A_NORMAL)
-            self.screen.addstr(f"  {name}={value}", attr)
+            self.screen.addstr(f" {name}={value}", attr)
 
     def _trend_attr(self, key: str) -> int:
         """Green if the value rose since the previous packet, red if it fell."""

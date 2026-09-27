@@ -45,6 +45,10 @@ class FT0203USBReadTests(unittest.TestCase):
         self.assertAlmostEqual(fields["station_dew_point"]["value"], fields["dew_point"]["value"], delta=0.3)
         self.assertAlmostEqual(fields["station_feels_like"]["value"], fields["feels_like"]["value"], delta=0.3)
         self.assertEqual(fields["sensor_mask"]["value"], 0x3F)  # captured before rain gauge pairing
+        # WeatherHome ignores rain fields while flag bit 6 (rain gauge) is clear.
+        self.assertIsNone(fields["rain_total"]["value"])
+        self.assertEqual(fields["channel_temperature_flags"]["value"], 0x01)
+        self.assertEqual(fields["channel_humidity_flags"]["value"], 0x01)
         self.assertAlmostEqual(readings[0]["fields"]["indoor_temperature"]["value"], 23.89, places=2)
         self.assertAlmostEqual(readings[0]["fields"]["outdoor_temperature"]["value"], 19.78, places=2)
 

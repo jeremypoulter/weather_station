@@ -68,9 +68,10 @@ bytes, so they are offsets into the full 76-byte application packet.
 |---|---:|---|---|---|
 | `0x00` | 1 | packet length | Always `0x4c` for current record | verified |
 | `0x01` | 1 | response command | Always `0x04` for current record | verified |
-| `0x02-0x03` | 2 | header | Always `01 01` | unknown |
-| `0x04` | 1 | sensor-presence mask (candidate) | `0x3f` before rain gauge registration, `0x7f` after | provisional |
-| `0x05-0x06` | 2 | unknown | Always `00 00` | unknown |
+| `0x02` | 1 | CH1-CH8 temperature flags | bit n = channel n+1 has temperature data | app-confirmed |
+| `0x03` | 1 | CH1-CH8 humidity flags | bit n = channel n+1 has humidity data | app-confirmed |
+| `0x04` | 1 | sensor flags | see *Sensor flags* below; `0x3f` before rain gauge registration, `0x7f` after | app-confirmed |
+| `0x05-0x06` | 2 | unknown | Always `00 00`; WeatherHome stores them but never reads them | unknown |
 | `0x07` | 2 LE | indoor temperature raw | `((raw & 0x0fff) - 400) / 10` F, then convert to C | verified |
 | `0x09` | 1 | indoor humidity | percent | verified |
 | `0x0a` | 1.5 | outdoor temperature (CH1) | 12-bit packed, same formula as indoor temperature | verified |
@@ -83,15 +84,15 @@ bytes, so they are offsets into the full 76-byte application packet.
 | `0x2b-0x35` | 10.5 | feels-like, CH2-CH8 | `0x7fa` = no sensor | structure inferred |
 | `0x36` | 2 LE | absolute pressure | `raw * 0.1` hPa | verified |
 | `0x38` | 2 LE | relative pressure | `raw * 0.1` hPa | verified |
-| `0x3a` | 1 | average wind speed | `raw * 0.1` m/s | verified |
-| `0x3b` | 2 LE | wind gust | `raw * 0.00625` m/s | verified |
-| `0x3d` | 2 LE | wind direction | degrees | verified |
+| `0x3a` | 1.5 | average wind speed | `(LE16 & 0xfff) * 0.1` m/s | verified |
+| `0x3b` | 1.5 | wind gust | `(LE16 >> 4) * 0.1` m/s | verified |
+| `0x3d` | 1.5 | wind direction | `LE16 & 0xfff` degrees | verified |
 | `0x3f` | 2 LE | rainfall, last hour | `raw * 0.1` mm | verified |
 | `0x41` | 2 LE | rainfall, today | `raw * 0.1` mm | verified |
-| `0x43` | 2 LE | rainfall, week | `raw * 0.1` mm | verified |
-| `0x45` | 2 LE | rainfall, month | `(raw >> 4) * 0.1` mm | verified |
-| `0x48` | 2 LE | rainfall, total | `raw * 0.1` mm | verified |
-| `0x4a` | 1 | unknown | Always `0x00` in captures to date | unknown |
+| `0x43` | 2.5 | rainfall, week | `(LE32 & 0xfffff) * 0.1` mm | verified |
+| `0x45` | 2.5 | rainfall, month | `((LE32 >> 4) & 0xfffff) * 0.1` mm | verified |
+| `0x48` | 2.5 | rainfall, total | `(LE32 & 0xfffff) * 0.1` mm | verified |
+| `0x4a` | 0.5 | high nibble unused | low nibble is the top of rain total | app-confirmed |
 | `0x4b` | 1 | additive checksum | packet checksum | verified |
 
 The high nibble of each temperature raw value is masked because the values are
@@ -128,6 +129,47 @@ appeared (rain total 0.0 to 2.1 mm), when the rain gauge was paired. That makes
 it a strong candidate for a sensor-presence or link bitmask: bit 6 (`0x40`) is
 likely the rain gauge. The meaning of the remaining bits is unconfirmed. Test it
 by removing a sensor's batteries and watching for the matching bit to clear.
+
+## WeatherHome Parser (ID0040.dll)
+
+The device-info reply `0b 01 0a 40 ...` carries model ID `0x40` at byte 3,
+which matches the archived `ID0040.dll` model module. Its exported
+`ReadMainRecord` calls `UsbReadRecord` and parses the 76-byte record (static
+disassembly at `0x10007320`-`0x10007891`). It confirms the layout above:
+
+- Four loops of eight 12-bit nibble-packed slots from `0x0a`, `0x1e` and
+  `0x2a`, plus eight humidity bytes from `0x16`: CH1-CH8 temperature,
+  humidity, dew point and feels-like.
+- Values are treated as "no data" when 12-bit fields are `>= 0x7fa`, humidity
+  `>= 0x7a` (122), and pressure `>= 0x7ffa`.
+- Wind average, gust and direction are 12-bit fields; rain week/month/total are
+  20-bit fields, so the low nibble of `0x4a` belongs to rain total.
+- Rain fields are parsed only when `0x04` bit 6 is set. Otherwise the app
+  stores its placeholder values.
+
+### Sensor flags
+
+WeatherHome's `ReadMainRecord` (`0x1000b540`) tests these bits to decide which
+sensor history graphs to fetch with `UsbReadGraph(type, index)`:
+
+| Byte | Bit | Graph type | Meaning |
+|---|---|---|---|
+| `0x02` | 0-7 | 3, index 0-7 | CH1-CH8 temperature |
+| `0x03` | 0-7 | 4, index 0-7 | CH1-CH8 humidity |
+| `0x04` | 0 | 1 | indoor temperature |
+| `0x04` | 1 | 2 | indoor humidity |
+| `0x04` | 2 | 6, index 0 | wind average |
+| `0x04` | 3 | 6, index 1 | wind gust |
+| `0x04` | 4 | none | not read by WeatherHome; likely wind direction |
+| `0x04` | 5 | 5 | pressure (16-bit, `0x7ffa` invalid) |
+| `0x04` | 6 | 8 | rain; also gates rain parsing |
+| `0x04` | 7 | none | not read by WeatherHome |
+
+Graph types 5 and 8 decode 16-bit values with the pressure/rain "no data"
+threshold; type 6 decodes 12-bit wind values. The type labels for bits 2, 3
+and 5 come from those decoders and bit order, not from UI strings. Bytes
+`0x05-0x06` are copied for change detection only. No battery, RSSI or link
+fields are referenced anywhere in the parser.
 
 ## Unknown-Field Capture
 
