@@ -26,7 +26,7 @@ class FT0203USBReadTests(unittest.TestCase):
         readings = [decode_current_packet(validate_packet(packet)) for packet in current_packets]
         self.assertEqual({reading["packet_length"] for reading in readings}, {76})
         self.assertEqual({reading["fields"]["indoor_humidity"]["value"] for reading in readings}, {63})
-        self.assertEqual({reading["fields"]["outdoor_humidity"]["value"] for reading in readings}, {81})
+        self.assertEqual({reading["fields"]["ch1_humidity"]["value"] for reading in readings}, {81})
         self.assertEqual(readings[0]["fields"]["relative_pressure"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["absolute_pressure"]["status"], "validated")
         self.assertEqual(readings[0]["fields"]["dew_point"]["status"], "derived_validated")
@@ -42,15 +42,19 @@ class FT0203USBReadTests(unittest.TestCase):
         # The console reports its own dew point and feels-like in the 12-bit
         # Fahrenheit format; they agree with the calculated values.
         fields = readings[0]["fields"]
-        self.assertAlmostEqual(fields["station_dew_point"]["value"], fields["dew_point"]["value"], delta=0.3)
-        self.assertAlmostEqual(fields["station_feels_like"]["value"], fields["feels_like"]["value"], delta=0.3)
+        self.assertAlmostEqual(fields["ch1_dew_point"]["value"], fields["dew_point"]["value"], delta=0.3)
+        self.assertAlmostEqual(fields["ch1_feels_like"]["value"], fields["feels_like"]["value"], delta=0.3)
         self.assertEqual(fields["sensor_mask"]["value"], 0x3F)  # captured before rain gauge pairing
         # WeatherHome ignores rain fields while flag bit 6 (rain gauge) is clear.
         self.assertIsNone(fields["rain_total"]["value"])
         self.assertEqual(fields["channel_temperature_flags"]["value"], 0x01)
         self.assertEqual(fields["channel_humidity_flags"]["value"], 0x01)
+        # CH2-CH8 have no sensor: 0x7fa / 0x7a slots decode as "no data".
+        for channel in range(2, 9):
+            for name in ("temperature", "humidity", "dew_point", "feels_like"):
+                self.assertIsNone(fields[f"ch{channel}_{name}"]["value"], (channel, name))
         self.assertAlmostEqual(readings[0]["fields"]["indoor_temperature"]["value"], 23.89, places=2)
-        self.assertAlmostEqual(readings[0]["fields"]["outdoor_temperature"]["value"], 19.78, places=2)
+        self.assertAlmostEqual(readings[0]["fields"]["ch1_temperature"]["value"], 19.78, places=2)
 
     def test_invalid_checksum_is_rejected(self) -> None:
         packet = bytearray.fromhex("04800286")

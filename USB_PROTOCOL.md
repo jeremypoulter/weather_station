@@ -74,13 +74,13 @@ bytes, so they are offsets into the full 76-byte application packet.
 | `0x05-0x06` | 2 | unknown | Always `00 00`; WeatherHome stores them but never reads them | unknown |
 | `0x07` | 2 LE | indoor temperature raw | `((raw & 0x0fff) - 400) / 10` F, then convert to C | verified |
 | `0x09` | 1 | indoor humidity | percent | verified |
-| `0x0a` | 1.5 | outdoor temperature (CH1) | 12-bit packed, same formula as indoor temperature | verified |
+| `0x0a` | 1.5 | temperature, CH1 | 12-bit packed, same formula as indoor temperature | verified |
 | `0x0b-0x15` | 10.5 | temperature, CH2-CH8 | seven more 12-bit packed slots; `0x7fa` = no sensor | structure inferred |
-| `0x16` | 1 | outdoor humidity (CH1) | percent | verified |
+| `0x16` | 1 | humidity, CH1 | percent | verified |
 | `0x17-0x1d` | 7 | humidity, CH2-CH8 | `0x7a` (122) = no sensor | structure inferred |
-| `0x1e` | 1.5 | console dew point (CH1) | 12-bit packed, temperature formula | decoded |
+| `0x1e` | 1.5 | dew point, CH1 (console-computed) | 12-bit packed, temperature formula | decoded |
 | `0x1f-0x29` | 10.5 | dew point, CH2-CH8 | `0x7fa` = no sensor | structure inferred |
-| `0x2a` | 1.5 | console feels-like (CH1) | 12-bit packed, temperature formula | decoded |
+| `0x2a` | 1.5 | feels-like, CH1 (console-computed) | 12-bit packed, temperature formula | decoded |
 | `0x2b-0x35` | 10.5 | feels-like, CH2-CH8 | `0x7fa` = no sensor | structure inferred |
 | `0x36` | 2 LE | absolute pressure | `raw * 0.1` hPa | verified |
 | `0x38` | 2 LE | relative pressure | `raw * 0.1` hPa | verified |
@@ -175,9 +175,11 @@ fields are referenced anywhere in the parser.
 
 For every current-reading packet, `ft0203_usb_read.py` records the
 still-unexplained header bytes `0x02-0x06` individually in `unknown_bytes` and
-as `unknown_ranges`, along with the unused CH2-CH8 slot blocks as
-`channel_slots`. Decoded fields `station_dew_point`, `station_feels_like` and
-`sensor_mask` are included in `fields`.
+as `unknown_ranges`, along with the raw CH2-CH8 slot blocks as `channel_slots`. Every channel is
+decoded into `ch1_temperature`, `ch1_humidity`, `ch1_dew_point` and
+`ch1_feels_like` through `ch8_*` in `fields`; a value is `null` when its slot
+holds the "no data" code. `sensor_mask`, `channel_temperature_flags` and
+`channel_humidity_flags` hold bytes `0x04`, `0x02` and `0x03`.
 
 The tracker at `0x4a` is also retained as an unknown value. It was `0x00` for
 the whole 24-hour capture; earlier values such as `0x4400`/`0x5b00` came from
@@ -192,8 +194,8 @@ These are calculated by the reader rather than directly transmitted fields:
 
 | Value | Inputs | Status |
 |---|---|---|
-| Dew point | outdoor temperature and humidity; Magnus formula | display-validated; matches console value at `0x1e` |
-| Feels-like temperature | outdoor temperature, humidity, average wind; wind-chill/heat-index calculation | display-validated; matches console value at `0x2a` |
+| Dew point | CH1 temperature and humidity; Magnus formula | display-validated; matches console value at `0x1e` |
+| Feels-like temperature | CH1 temperature, humidity, average wind; wind-chill/heat-index calculation | display-validated; matches console value at `0x2a` |
 
 ## Sensor Status, Battery, and RSSI
 

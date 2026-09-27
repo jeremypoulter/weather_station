@@ -28,7 +28,7 @@ span two USB reports.
 Validated against the console display:
 
 - Indoor temperature and humidity
-- Outdoor temperature and humidity
+- CH1 temperature and humidity (the console's first thermometer/hygrometer channel)
 - Absolute pressure at packet offset `0x36`
 - Relative pressure at packet offset `0x38`
 - Derived dew point and feels-like values
@@ -36,7 +36,7 @@ Validated against the console display:
 - Wind gust: `LE16(0x3b) * 0.00625 m/s`
 - Wind direction: `LE16(0x3d)` degrees
 - Rain last hour, today, week, month, and total
-- Console-computed dew point (`0x1e`) and feels-like (`0x2a`)
+- Console-computed dew point and feels-like for each channel
 
 Absolute pressure at `0x36` and relative pressure at `0x38` are separate,
 validated fields. Rain hour/day/week/total use direct tenths of millimetres;
@@ -69,16 +69,17 @@ Controls:
 - `h`: show help
 - `q` or Ctrl+C: quit
 
-Below the verified measurements, the dashboard shows the console's own dew
-point and feels-like values, the candidate sensor-presence byte (`0x04`) broken down into bits with bit 6 labelled as the rain gauge, the
-still-unexplained header bytes `0x02-0x06`, and the unused CH2-CH8 channel
-slots. A `*` marks a range containing a change, and each individual byte that
-changed since the previous packet is highlighted in yellow. Measured values are
-shown in green when they increased and red when they decreased since the
-previous packet. The header bytes are recorded as `unknown_bytes` and
-`unknown_ranges`, the channel slots as `channel_slots`, and changes as
-`unknown_changed_offsets` in every `type=reading` NDJSON record. The dashboard
-needs a terminal of at least 82 columns by 23 rows.
+The dashboard has a sensor table listing the indoor sensor and every
+thermometer/hygrometer channel CH1-CH8 that is reporting, with temperature,
+humidity, the console's dew point and feels-like, and the channel's presence
+flags. Channels with no sensor are listed on one line. Below that it shows the
+header bytes `0x02-0x06` and the `0x04` sensor-flag bits. A `*` marks a range
+containing a change, and each changed byte or bit is highlighted in yellow.
+Measured values are shown in green when they increased and red when they
+decreased since the previous packet. Every `type=reading` NDJSON record has
+`ch1_temperature` ... `ch8_feels_like` fields; header bytes are recorded as
+`unknown_bytes` and `unknown_ranges`. The dashboard needs a terminal of at
+least 82 columns by 23 rows.
 
 For line-oriented output:
 
