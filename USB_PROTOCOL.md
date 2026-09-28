@@ -68,8 +68,8 @@ bytes, so they are offsets into the full 76-byte application packet.
 |---|---:|---|---|---|
 | `0x00` | 1 | packet length | Always `0x4c` for current record | verified |
 | `0x01` | 1 | response command | Always `0x04` for current record | verified |
-| `0x02` | 1 | CH1-CH8 temperature flags | bit n = channel n+1 has temperature data | app-confirmed |
-| `0x03` | 1 | CH1-CH8 humidity flags | bit n = channel n+1 has humidity data | app-confirmed |
+| `0x02` | 1 | CH1-CH8 temperature flags | bit n = channel n+1 registered | app-confirmed, capture-verified |
+| `0x03` | 1 | CH1-CH8 humidity flags | bit n = channel n+1 registered | app-confirmed, capture-verified |
 | `0x04` | 1 | sensor flags | see *Sensor flags* below; `0x3f` before rain gauge registration, `0x7f` after | app-confirmed |
 | `0x05-0x06` | 2 | unknown | Always `00 00`; WeatherHome stores them but never reads them | unknown |
 | `0x07` | 2 LE | indoor temperature raw | `((raw & 0x0fff) - 400) / 10` F, then convert to C | verified |
@@ -164,6 +164,11 @@ sensor history graphs to fetch with `UsbReadGraph(type, index)`:
 | `0x04` | 5 | 5 | pressure (16-bit, `0x7ffa` invalid) |
 | `0x04` | 6 | 8 | rain; also gates rain parsing |
 | `0x04` | 7 | none | not read by WeatherHome |
+
+The flags mean a sensor is **registered** with the console, not that it is
+currently transmitting. A registered sensor that stops transmitting keeps its
+flag, and its values change to the "no data" code (`0x7fa`, `0x7a`). See the
+2026-09-27 capture notes in `USB_FINDINGS.md`.
 
 Graph types 5 and 8 decode 16-bit values with the pressure/rain "no data"
 threshold; type 6 decodes 12-bit wind values. The type labels for bits 2, 3

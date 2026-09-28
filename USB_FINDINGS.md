@@ -392,3 +392,39 @@ Parser" in `USB_PROTOCOL.md`:
   all 5,382 packets of the 24-hour capture with these widths changes no value.
 - `0x05-0x06` are stored but never interpreted by the app.
 - The parser has no battery, RSSI or link-quality fields.
+
+### Sensor events capture, 2026-09-27 to 2026-09-28
+
+Capture: `ft0203_usb_read_20260927_151245Z.ndjson`. It holds 3,807 packets from
+15:12:45 to 08:11:16 UTC with no exchange errors. During the run the owner
+removed and refitted the anemometer battery, and moved the remote
+thermometer/hygrometer from CH1 to CH5 and back.
+
+| Time (UTC) | `0x02 0x03` | Observed |
+|---|---|---|
+| 15:12:45 | `01 01` | CH1 and wind reporting |
+| 15:14:06 | `01 01` | Anemometer battery out: wind average, gust and direction all read `0x7fa` (no data) |
+| 15:15:42 | `01 01` | Sensor switched off CH1: CH1 slots read `0x7fa`/`0x7a`, flag still set |
+| 15:18:22 | `11 11` | CH5 registered and reporting 26.5 C / 59 %; CH1 flag still set |
+| 15:19:27 | `10 10` | CH1 registration dropped |
+| 15:23:11 | `10 10` | Sensor switched off CH5: CH5 slots read no data |
+| 15:23:43 | `11 11` | CH1 registered again and reporting |
+| 15:24:32 | `01 01` | CH5 registration dropped |
+| 08:04:51 | `01 01` | Anemometer battery refitted: wind values return, briefly alternating with no data for one packet |
+
+Findings:
+
+- `0x02`/`0x03` are per-channel **registration** flags. The channel slot
+  decoding is confirmed for CH5 (temperature, humidity, dew point and
+  feels-like all decode correctly from slot index 4).
+- A sensor that stops transmitting is shown by its values changing to the
+  "no data" codes, not by clearing its flag. After a channel change the console
+  drops the old channel's flag within about four minutes.
+- `0x04` stayed `0x7f` for the whole run, including 18 hours with the
+  anemometer battery removed. The wind bits therefore mean "registered", not
+  "currently linked", as for the channel flags. Lost signal must be detected
+  from the no-data values.
+- Nothing in the packet reflected the remote sensor's C/F switch. Every byte
+  that changed during the run belongs to a known measurement field. The switch
+  appears to affect only the sensor's own display; the console always reports
+  temperatures in 0.1 F units.

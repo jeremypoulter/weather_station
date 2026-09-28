@@ -62,6 +62,28 @@ class FT0203USBReadTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
             validate_packet(bytes(packet))
 
+    def test_channel_moves_and_lost_signal(self) -> None:
+        # Packets from ft0203_usb_read_20260927_151245Z.ndjson. The wind sensor
+        # battery was out, then the remote sensor was moved from CH1 to CH5.
+        lost = decode_current_packet(validate_packet(bytes.fromhex(
+            "4c0401017f0000810436faa77ffaa77ffaa77ffaa77f7a7a7a7a7a7a7a7afaa77ffaa77ffaa77ffaa77ffaa77f"
+            "faa77ffaa77ffaa77f2d271c27faa77ffa07000000003f03c021003f0300f9")))["fields"]
+        # CH1 still registered (flags 01/01) but no data; wind lost but 0x04 unchanged.
+        self.assertEqual(lost["channel_temperature_flags"]["value"], 0x01)
+        self.assertIsNone(lost["ch1_temperature"]["value"])
+        self.assertIsNone(lost["wind_average"]["value"])
+        self.assertIsNone(lost["wind_direction"]["value"])
+        self.assertEqual(lost["sensor_mask"]["value"], 0x7F)
+        moved = decode_current_packet(validate_packet(bytes.fromhex(
+            "4c0411117f0000820436faa77ffaa77fada47ffaa77f7a7a7a7a3b7a7a7afaa77ffaa77f12a47ffaa77ffaa77f"
+            "faa77fada47ffaa77f2e271d27faa77ffa07000000003f03c021003f030052")))["fields"]
+        self.assertEqual(moved["channel_temperature_flags"]["value"], 0x11)  # CH1 and CH5
+        self.assertIsNone(moved["ch1_temperature"]["value"])
+        self.assertAlmostEqual(moved["ch5_temperature"]["value"], 26.5, places=1)
+        self.assertEqual(moved["ch5_humidity"]["value"], 59)
+        self.assertAlmostEqual(moved["ch5_dew_point"]["value"], 17.9, places=1)
+        self.assertAlmostEqual(moved["ch5_feels_like"]["value"], 26.5, places=1)
+
     def test_rain_scaling_matches_verified_display_values(self) -> None:
         self.assertAlmostEqual(decode_rain(0x007B, set()), 12.3)
         self.assertAlmostEqual(decode_rain(0x00DE, set()), 22.2)

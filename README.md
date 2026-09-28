@@ -72,7 +72,8 @@ Controls:
 The dashboard has a sensor table listing the indoor sensor and every
 thermometer/hygrometer channel CH1-CH8 that is reporting, with temperature,
 humidity, the console's dew point and feels-like, and the channel's presence
-flags. Channels with no sensor are listed on one line. Below that it shows the
+flags. A channel that is registered but not transmitting is marked
+"no signal". Channels with no sensor are listed on one line. Below that it shows the
 header bytes `0x02-0x06` and the `0x04` sensor-flag bits. A `*` marks a range
 containing a change, and each changed byte or bit is highlighted in yellow.
 Measured values are shown in green when they increased and red when they

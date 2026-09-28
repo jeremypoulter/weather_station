@@ -364,6 +364,8 @@ class Dashboard:
             if y >= rows - 1:
                 break
             flags = f"{(temp_flags >> bit) & 1}/{(humidity_flags >> bit) & 1}"
+            if present and not has_data:
+                flags += "  no signal"
             self._sensor_row(y, f"CH{channel}", prefix + "temperature", prefix + "humidity",
                              prefix + "dew_point", prefix + "feels_like", flags)
             y += 1
