@@ -424,7 +424,8 @@ Findings:
   anemometer battery removed. The wind bits therefore mean "registered", not
   "currently linked", as for the channel flags. Lost signal must be detected
   from the no-data values.
-- Nothing in the packet reflected the remote sensor's C/F switch. Every byte
-  that changed during the run belongs to a known measurement field. The switch
-  appears to affect only the sensor's own display; the console always reports
-  temperatures in 0.1 F units.
+- The remote sensor also has a C/F switch. Every byte that changed during the
+  run belongs to a known measurement field, and the protocol always carries
+  temperatures in 0.1 F units, so the switch most likely affects only the
+  sensor's own display. This is unconfirmed, because it is not known whether
+  the switch was toggled during the run.
