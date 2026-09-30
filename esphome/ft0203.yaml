@@ -1,0 +1,93 @@
+# Cotech FT-0203 weather station on an ESP32-S3 (USB host).
+#
+# Hardware: ESP32-S3-DevKitC-1 v1.0 with an OTG Y cable on the native "USB"
+# port (the cable's power plug supplies VBUS). See ../ESP32_S3_WIRING.md.
+# Logs and flashing use the "UART" port.
+
+substitutions:
+  name: weather-station
+  # VERBOSE also logs every published sensor value: esphome run -s log_level VERBOSE ...
+  log_level: DEBUG
+
+esphome:
+  name: ${name}
+  platformio_options:
+    # QIO can boot-loop on some S3 boards with ESP-IDF; DIO is what the tested board uses.
+    board_build.flash_mode: dio
+
+esp32:
+  board: esp32-s3-devkitc-1
+  flash_size: 8MB
+  framework:
+    type: esp-idf
+
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [ft0203]
+
+logger:
+  level: ${log_level}
+  # The native USB pins are the USB host, so logs must not use USB-Serial/JTAG.
+  hardware_uart: UART0
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+usb_host:
+
+ft0203:
+  id: station
+  update_interval: 16s
+
+binary_sensor:
+  - platform: ft0203
+    connected:
+      name: "Weather station USB"
+
+# A value the station reports as "no data" (a remote sensor that stopped
+# transmitting, the anemometer battery removed) shows as unknown.
+sensor:
+  - platform: ft0203
+    indoor_temperature:
+      name: "Indoor temperature"
+    indoor_humidity:
+      name: "Indoor humidity"
+    ch1_temperature:
+      name: "Outdoor temperature"
+    ch1_humidity:
+      name: "Outdoor humidity"
+    ch1_dew_point:
+      name: "Outdoor dew point"
+    ch1_feels_like:
+      name: "Outdoor feels like"
+    relative_pressure:
+      name: "Pressure"
+    absolute_pressure:
+      name: "Absolute pressure"
+    wind_speed:
+      name: "Wind speed"
+    wind_gust:
+      name: "Wind gust"
+    wind_direction:
+      name: "Wind direction"
+    rain_last_hour:
+      name: "Rain last hour"
+    rain_today:
+      name: "Rain today"
+    rain_week:
+      name: "Rain this week"
+    rain_month:
+      name: "Rain this month"
+    rain_total:
+      name: "Rain total"

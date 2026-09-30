@@ -20,3 +20,9 @@ esp32_usb_probe/sdkconfig.esp32-s3-devkitc-1
 esp32_usb_probe/sdkconfig.old
 esp32_usb_probe/managed_components/
 esp32_usb_probe/dependencies.lock
+
+# ESPHome build tooling
+.venv-esphome/
+.esphome/
+esphome/*.yaml.secrets
+esphome/secrets.yaml
