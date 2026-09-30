@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" role="img" aria-labelledby="title desc">
+  <title id="title">FT-0203 USB connection to an ESP32-S3-DevKitC-1 v1.0 using an OTG Y cable</title>
+  <desc id="desc">The weather station plugs into the USB-A female socket of an OTG Y cable. The cable's Micro-B host plug goes into the board's native USB port. The cable's second USB-A plug goes to a 5 V USB supply that provides VBUS. The board's UART port is used for power, flashing and logs.</desc>
+  <style>
+    .title { font: 700 28px sans-serif; fill: #102a43; }
+    .subtitle { font: 16px sans-serif; fill: #486581; }
+    .head { font: 700 18px sans-serif; fill: #102a43; }
+    .body { font: 16px sans-serif; fill: #243b53; }
+    .small { font: 14px sans-serif; fill: #243b53; }
+    .note { font: 700 15px sans-serif; fill: #7c2d12; }
+    .ok { font: 700 15px sans-serif; fill: #166534; }
+    .box { fill: #f7fafc; stroke: #486581; stroke-width: 2; }
+    .board { fill: #e6fffa; stroke: #0f766e; stroke-width: 3; }
+    .usb { fill: #dbeafe; stroke: #2563eb; stroke-width: 2; }
+    .power { fill: #dcfce7; stroke: #16a34a; stroke-width: 2; }
+    .warning { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; }
+    .data-line { stroke: #2563eb; stroke-width: 5; fill: none; }
+    .power-line { stroke: #16a34a; stroke-width: 5; fill: none; }
+  </style>
+  <rect width="1200" height="800" fill="#ffffff"/>
+  <text x="60" y="55" class="title">FT-0203 weather station → ESP32-S3 USB host</text>
+  <text x="60" y="83" class="subtitle">ESP32-S3-DevKitC-1 v1.0 • OTG Y cable supplies VBUS • verified 2026-09-30</text>
+
+  <rect x="60" y="150" width="230" height="200" rx="14" class="box"/>
+  <text x="175" y="192" class="head" text-anchor="middle">Cotech FT-0203</text>
+  <text x="175" y="219" class="body" text-anchor="middle">weather-station console</text>
+  <text x="175" y="246" class="small" text-anchor="middle">has its own power supply</text>
+  <rect x="111" y="272" width="128" height="49" rx="5" class="usb"/>
+  <text x="175" y="303" class="head" text-anchor="middle">USB-A plug</text>
+
+  <path d="M290 296 H380" class="data-line"/>
+  <text x="335" y="280" class="small" text-anchor="middle">USB data</text>
+
+  <rect x="380" y="150" width="280" height="290" rx="14" class="usb"/>
+  <text x="520" y="188" class="head" text-anchor="middle">OTG Y cable</text>
+  <rect x="400" y="215" width="240" height="46" rx="5" class="box"/>
+  <text x="520" y="244" class="small" text-anchor="middle">1. USB-A female → station</text>
+  <rect x="400" y="273" width="240" height="46" rx="5" class="box"/>
+  <text x="520" y="302" class="small" text-anchor="middle">2. Micro-B host plug → board</text>
+  <rect x="400" y="331" width="240" height="46" rx="5" class="power"/>
+  <text x="520" y="360" class="small" text-anchor="middle">3. USB-A power plug → 5 V</text>
+  <text x="520" y="410" class="ok" text-anchor="middle">Power leg supplies VBUS</text>
+
+  <path d="M660 296 H720" class="data-line"/>
+  <text x="690" y="280" class="small" text-anchor="middle">D+/D−</text>
+
+  <rect x="720" y="125" width="400" height="425" rx="20" class="board"/>
+  <text x="920" y="165" class="head" text-anchor="middle">ESP32-S3-DevKitC-1 v1.0</text>
+  <text x="920" y="190" class="body" text-anchor="middle">native ESP32-S3 USB-OTG controller</text>
+  <rect x="750" y="230" width="140" height="94" rx="9" class="usb"/>
+  <text x="820" y="260" class="head" text-anchor="middle">USB port</text>
+  <text x="820" y="286" class="small" text-anchor="middle">ESP32-S3 USB</text>
+  <text x="820" y="307" class="small" text-anchor="middle">USE THIS PORT</text>
+  <text x="915" y="262" class="small">D+ → GPIO20</text>
+  <text x="915" y="287" class="small">D− → GPIO19</text>
+  <text x="915" y="312" class="small">VBUS: D7 blocks</text>
+  <text x="915" y="332" class="small">board → port</text>
+
+  <rect x="750" y="380" width="140" height="94" rx="9" class="warning"/>
+  <text x="820" y="410" class="head" text-anchor="middle">UART port</text>
+  <text x="820" y="436" class="small" text-anchor="middle">USB-to-UART bridge</text>
+  <text x="820" y="457" class="note" text-anchor="middle">NOT a USB host</text>
+  <text x="915" y="422" class="small">logs: /dev/ttyUSB3</text>
+  <text x="915" y="447" class="small">power + flashing</text>
+
+  <path d="M520 377 V500 H150" class="power-line"/>
+  <text x="330" y="490" class="small" text-anchor="middle">Y cable power plug</text>
+  <rect x="60" y="470" width="90" height="60" rx="10" class="power"/>
+  <text x="105" y="497" class="head" text-anchor="middle">5 V</text>
+  <text x="105" y="518" class="small" text-anchor="middle">USB supply</text>
+
+  <path d="M820 474 V620 H340" class="power-line"/>
+  <text x="580" y="608" class="small" text-anchor="middle">Micro-USB data cable</text>
+  <rect x="60" y="585" width="280" height="70" rx="14" class="power"/>
+  <text x="200" y="615" class="head" text-anchor="middle">Computer</text>
+  <text x="200" y="640" class="small" text-anchor="middle">flashing and serial monitor</text>
+
+  <rect x="60" y="702" width="1060" height="66" rx="9" class="warning"/>
+  <text x="82" y="730" class="note">The board does not supply VBUS on its native USB port (diode D7 blocks it), so a plain OTG adapter reads 0 V.</text>
+  <text x="82" y="754" class="note">Do not wire 5 V from a GPIO. Only one USB host may talk to the station: unplug it from Linux first.</text>
+</svg>

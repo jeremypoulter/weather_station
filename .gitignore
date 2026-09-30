@@ -12,3 +12,11 @@ env/
 
 # Local editor state
 .vscode/
+
+# PlatformIO / ESP-IDF build products
+esp32_usb_probe/.pio/
+esp32_usb_probe/sdkconfig
+esp32_usb_probe/sdkconfig.*
+esp32_usb_probe/sdkconfig.old
+esp32_usb_probe/managed_components/
+esp32_usb_probe/dependencies.lock

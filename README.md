@@ -51,6 +51,12 @@ See [USB_PROTOCOL.md](USB_PROTOCOL.md) for the verified transport, framing,
 and complete current-record map. [USB_FINDINGS.md](USB_FINDINGS.md) contains
 the experiment log and WeatherHome source investigation.
 
+For the planned ESPHome implementation on an **ESP32-S3-DevKitC-1 v1.0**, see
+[ESP32_S3_WIRING.md](ESP32_S3_WIRING.md). It shows the board-specific USB-host
+connection and power arrangement. The first enumeration-only firmware is in
+[`esp32_usb_probe/`](esp32_usb_probe/README.md); **read its connector/VBUS
+warning before connecting the weather station**.
+
 ## Live Reader
 
 Run the interactive terminal dashboard:
