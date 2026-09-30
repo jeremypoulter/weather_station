@@ -65,7 +65,7 @@ read-only test firmware.
 Run the interactive terminal dashboard:
 
 ```bash
-python3 ft0203_usb_read.py
+python3 python/ft0203_usb_read.py
 ```
 
 The reader requests a current packet every 16 seconds, displays decoded values
@@ -94,7 +94,7 @@ least 82 columns by 23 rows.
 For line-oriented output:
 
 ```bash
-python3 ft0203_usb_read.py --plain --samples 5 --interval 5
+python3 python/ft0203_usb_read.py --plain --samples 5 --interval 5
 ```
 
 Useful options:
@@ -109,7 +109,7 @@ For a 24-hour interactive capture, run the reader in a terminal that remains
 open:
 
 ```bash
-python3 ft0203_usb_read.py --duration 86400
+python3 python/ft0203_usb_read.py --duration 86400
 ```
 
 The default 16-second interval produces approximately 5,400 current-reading
@@ -122,20 +122,20 @@ units, and a validation status for each field.
 
 ## Other Tools
 
-- `ft0203_poc.py`: passive hidraw listener. The station does not emit
+- `python/ft0203_poc.py`: passive hidraw listener. The station does not emit
   unsolicited reports.
-- `ft0203_usb_probe.py`: explicit historical transport experiments. It records
+- `python/ft0203_usb_probe.py`: explicit historical transport experiments. It records
   control-transfer, interrupt, and report-descriptor results without automatic
   fallback.
-- `ft0203_usb_poll_poc.py`: historical WH1080 A1 memory-read experiment. Keep
-  it as protocol evidence; use `ft0203_usb_read.py` for current data.
+- `python/ft0203_usb_poll_poc.py`: historical WH1080 A1 memory-read experiment. Keep
+  it as protocol evidence; use `python/ft0203_usb_read.py` for current data.
 
 ## Tests
 
 Run the captured-packet regression checks:
 
 ```bash
-python3 -m unittest -v test_ft0203_usb_read.py
+python3 -m unittest discover -s python -v
 ```
 
 ## USB Permissions

@@ -178,7 +178,7 @@ fields are referenced anywhere in the parser.
 
 ## Unknown-Field Capture
 
-For every current-reading packet, `ft0203_usb_read.py` records the
+For every current-reading packet, `python/ft0203_usb_read.py` records the
 still-unexplained header bytes `0x02-0x06` individually in `unknown_bytes` and
 as `unknown_ranges`, along with the raw CH2-CH8 slot blocks as `channel_slots`. Every channel is
 decoded into `ch1_temperature`, `ch1_humidity`, `ch1_dew_point` and
@@ -236,7 +236,7 @@ it in the 64-byte USB report are not part of the application packet.
 ## Evidence
 
 - Live captures: `ft0203_usb_read_*.ndjson`
-- Reader and tests: `ft0203_usb_read.py`, `test_ft0203_usb_read.py`
+- Reader and tests: `python/ft0203_usb_read.py`, `python/test_ft0203_usb_read.py`
 - Experiment log: `USB_FINDINGS.md`
 - Manual: [Cotech FT0203 instruction manual](https://www.manualslib.com/manual/2013390/Cotech-Ft0203.html)
 - WeatherHome archive and source analysis are described in `USB_FINDINGS.md`.

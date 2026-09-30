@@ -7,7 +7,7 @@ from pathlib import Path
 from ft0203_usb_read import CURRENT_COMMAND, decode_current_packet, decode_rain, validate_packet
 
 
-CAPTURE_PATH = Path("ft0203_usb_read_1789836512.ndjson")
+CAPTURE_PATH = Path(__file__).resolve().parent.parent / "ft0203_usb_read_1789836512.ndjson"
 
 
 class FT0203USBReadTests(unittest.TestCase):

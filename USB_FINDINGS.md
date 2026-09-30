@@ -3,7 +3,7 @@
 **Update, 2026-09-19:** the WeatherHome read protocol has now been verified on
 the connected station. See **WeatherHome discovery and working read protocol**
 below. The A1 experiments in the earlier sections are historical; the current
-reader is `ft0203_usb_read.py`.
+reader is `python/ft0203_usb_read.py`.
 
 ## Device and HID descriptor
 
@@ -28,8 +28,8 @@ establish a memory-read command or address stride.
 ## Captures and reproduction
 
 ```bash
-python3 ft0203_usb_poll_poc.py --start 0 --blocks 1 --capture --interval 2 --duration 90
-python3 ft0203_usb_probe.py --duration 60
+python3 python/ft0203_usb_poll_poc.py --start 0 --blocks 1 --capture --interval 2 --duration 90
+python3 python/ft0203_usb_probe.py --duration 60
 ```
 
 Local evidence files (ignored by the existing `*.ndjson` rule):
@@ -238,7 +238,7 @@ convention, not part of this device's raw USB report.
 Test command:
 
 ```bash
-python3 ft0203_usb_read.py --samples 5 --interval 5
+python3 python/ft0203_usb_read.py --samples 5 --interval 5
 ```
 
 Evidence: `ft0203_usb_read_1789836512.ndjson`, 2026-09-19 16:48:32–16:48:52 UTC.
@@ -307,7 +307,7 @@ The owner reported the console values as relative pressure **1019.5 hPa**,
 dew point **5.8 C**, feels like **15.1 C**, gust **0**, and wind direction
 **E** (expected 90 degrees). The timestamp recorded for the report is
 2026-09-20 18:31:20 UTC. A fresh USB capture could not be taken because an
-existing `ft0203_usb_read.py` process held the device open; its run was not
+existing `python/ft0203_usb_read.py` process held the device open; its run was not
 interrupted.
 
 This validates `LE16(0x38) / 10` as the **relative pressure** field. The owner

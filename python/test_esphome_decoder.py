@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ft0203_usb_read import decode_current_packet, validate_packet
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).resolve().parent.parent
 FIXTURE = ROOT / "tests" / "fixtures" / "current_packets.hex"
 COMPARED_FIELDS = (
     ["indoor_temperature", "indoor_humidity", "absolute_pressure", "relative_pressure",

@@ -9,7 +9,7 @@ code for configuration, calibration, erase or clock commands.
 
 After the first exchange it polls the current record every 16 seconds and
 prints a small decode (indoor and CH1 temperature and humidity, relative
-pressure) to cross-check against `ft0203_usb_read.py`. It stops after three
+pressure) to cross-check against `python/ft0203_usb_read.py`. It stops after three
 consecutive failures; unplug and replug the station to restart it.
 
 ## Important before connecting the weather station
@@ -57,7 +57,7 @@ indoor 26.3 C 45 % | ch1 20.3 C 54 % | relative pressure 1003.7 hPa
 ```
 
 The 76-byte packets pass the checksum and decode identically in
-`ft0203_usb_read.py` (temperatures, humidity, pressures, wind, rain).
+`python/ft0203_usb_read.py` (temperatures, humidity, pressures, wind, rain).
 
 The generic PlatformIO board profile is 8 MB flash, and the board's boot log
 reports an **8 MB flash chip**. This small test is configured for **2 MB** as

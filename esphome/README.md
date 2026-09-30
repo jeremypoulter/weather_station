@@ -88,11 +88,11 @@ The `connected` binary sensor is on while the station is answering.
 ## Tests
 
 The decoder, [ft0203_protocol.h](../components/ft0203/ft0203_protocol.h), has no
-ESPHome dependencies. `test_esphome_decoder.py` compiles it natively and checks
+ESPHome dependencies. `python/test_esphome_decoder.py` compiles it natively and checks
 it against the Python reference decoder on real captured packets:
 
 ```bash
-python3 -m unittest -v test_esphome_decoder.py
+python3 -m unittest discover -s python -v
 ```
 
 Build the firmware with:
