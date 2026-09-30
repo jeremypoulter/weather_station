@@ -9,6 +9,7 @@ env/
 
 # Local experiment outputs
 *.ndjson
+!tests/fixtures/*.ndjson
 
 # Local editor state
 .vscode/
