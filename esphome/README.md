@@ -20,12 +20,14 @@ The station has its own power supply and is only read over USB.
 
 ## Install
 
+Reference the component straight from GitHub. Nothing needs to be copied or
+cloned:
+
 ```yaml
 external_components:
-  - source:
-      type: local          # or: github://jeremypoulter/weather_station
-      path: ../components
+  - source: github://jeremypoulter/weather_station@main
     components: [ft0203]
+    refresh: 1d            # how often ESPHome checks the repository for changes
 
 logger:
   hardware_uart: UART0     # the native USB pins are the host, so not USB-Serial/JTAG
@@ -48,7 +50,21 @@ binary_sensor:
       name: "Weather station USB"
 ```
 
-[ft0203.yaml](ft0203.yaml) is a complete example. Copy
+`@main` follows the latest code. To keep your build stable, replace it with a
+commit hash or tag, for example `github://jeremypoulter/weather_station@<commit>`.
+
+To work on the component itself, point at a local checkout instead:
+
+```yaml
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components: [ft0203]
+```
+
+[ft0203.yaml](ft0203.yaml) is a complete example (it uses the local path, so
+it works from a checkout of this repository). Copy
 [secrets.yaml.example](secrets.yaml.example) to `secrets.yaml` and fill it in.
 
 ## Sensors
