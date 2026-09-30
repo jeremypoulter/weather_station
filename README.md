@@ -51,12 +51,14 @@ See [USB_PROTOCOL.md](USB_PROTOCOL.md) for the verified transport, framing,
 and complete current-record map. [USB_FINDINGS.md](USB_FINDINGS.md) contains
 the experiment log and WeatherHome source investigation.
 
-For the planned ESPHome implementation on an **ESP32-S3-DevKitC-1 v1.0**, see
-[ESP32_S3_WIRING.md](ESP32_S3_WIRING.md). It shows the board-specific USB-host
-connection and power arrangement. The read-only USB-host test firmware, which
-already reads live packets from the station, is in
-[`esp32_usb_probe/`](esp32_usb_probe/README.md); **read its VBUS
-note before connecting the weather station**.
+## ESPHome / Home Assistant
+
+An ESPHome external component reads the station directly from an ESP32-S3, with
+no computer in the loop. See [esphome/README.md](esphome/README.md) for the
+sensors and configuration, and [ESP32_S3_WIRING.md](ESP32_S3_WIRING.md) for the
+USB-host wiring (an OTG Y cable is needed to supply VBUS on the DevKitC-1 v1.0).
+[`esp32_usb_probe/`](esp32_usb_probe/README.md) is the earlier standalone
+read-only test firmware.
 
 ## Live Reader
 
