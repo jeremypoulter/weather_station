@@ -58,7 +58,7 @@ Every sensor is optional.
 | Key | Unit | Notes |
 |---|---|---|
 | `indoor_temperature`, `indoor_humidity` | °C, % | console's built-in sensor |
-| `ch1_temperature` ... `ch8_temperature` | °C | remote thermometer/hygrometer channels |
+| `ch1_temperature` ... `ch8_temperature` | °C | remote thermometer/hygrometer channels; name them for where the sensor is |
 | `ch1_humidity` ... `ch8_humidity` | % | |
 | `ch1_dew_point` ... `ch8_dew_point` | °C | computed by the console |
 | `ch1_feels_like` ... `ch8_feels_like` | °C | computed by the console |

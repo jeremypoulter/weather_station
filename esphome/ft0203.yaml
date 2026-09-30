@@ -55,6 +55,11 @@ binary_sensor:
     connected:
       name: "Weather station USB"
 
+captive_portal:
+
+web_server:
+  port: 80
+
 # A value the station reports as "no data" (a remote sensor that stopped
 # transmitting, the anemometer battery removed) shows as unknown.
 sensor:
