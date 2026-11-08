@@ -227,6 +227,8 @@ void FT0203Hub::on_drain_done_(uint32_t session, const usb_host::TransferStatus 
 }
 
 void FT0203Hub::handle_drain_result_(Result result) {
+  if (!this->draining_)
+    return;
   this->busy_.store(false);
   if (result == Result::DRAIN_DONE) {
     ESP_LOGD(TAG, "USB input queue idle after %u pending report(s)", this->drained_reports_);
