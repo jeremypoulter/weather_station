@@ -20,6 +20,9 @@ static constexpr uint8_t ENDPOINT_OUT = 0x04;
 static constexpr uint8_t ENDPOINT_IN = 0x83;
 static constexpr uint32_t EXCHANGE_TIMEOUT_MS = 4000;
 static constexpr uint32_t RETRY_DELAY_MS = 2000;
+static constexpr uint32_t DRAIN_IDLE_MS = 200;
+static constexpr uint8_t MAX_DRAIN_REPORTS = 8;
+static constexpr uint8_t DEVICE_INFO_PACKET_LENGTH = 11;
 static constexpr uint8_t UNAVAILABLE_AFTER_FAILURES = 3;
 
 float field_value(const Reading &reading, Field field) {
@@ -85,6 +88,9 @@ void FT0203Hub::on_connected() {
   this->info_done_ = false;
   this->polled_ = false;
   this->not_before_ms_ = 0;
+  this->drained_reports_ = 0;
+  this->drain_last_activity_ms_ = millis();
+  this->draining_ = true;
 
   auto err = usb_host_interface_claim(this->handle_, this->device_handle_, INTERFACE_NUMBER, 0);
   if (err != ESP_OK) {
@@ -112,6 +118,7 @@ void FT0203Hub::on_disconnected() {
   }
   this->busy_.store(false);
   this->result_.store(Result::NONE);
+  this->draining_ = false;
   this->publish_unavailable_();
   this->set_responding_(false);
   usb_host::USBClient::on_disconnected();
@@ -127,11 +134,28 @@ void FT0203Hub::loop() {
 
   const Result result = this->result_.exchange(Result::NONE, std::memory_order_acquire);
   if (result != Result::NONE) {
+    if (result == Result::DRAIN_REPORT || result == Result::DRAIN_DONE) {
+      this->handle_drain_result_(result);
+      return;
+    }
     this->handle_result_(result);
     return;
   }
 
   const uint32_t now = millis();
+  if (this->draining_) {
+    if (this->busy_.load()) {
+      if (now - this->drain_last_activity_ms_ >= DRAIN_IDLE_MS)
+        this->end_drain_(true);
+      return;
+    }
+    if (!this->submit_drain_read_(this->session_.load())) {
+      ESP_LOGW(TAG, "Could not read pending USB reports; continuing with device info");
+      this->draining_ = false;
+    }
+    return;
+  }
+
   if (this->busy_.load()) {
     if (now - this->exchange_started_ms_ > 2 * EXCHANGE_TIMEOUT_MS) {
       // The cancelled transfer never called back; give up on this exchange.
@@ -180,6 +204,61 @@ bool FT0203Hub::start_exchange_(uint8_t command) {
     this->handle_result_(Result::FAILED);
   }
   return sent;
+}
+
+bool FT0203Hub::submit_drain_read_(uint32_t session) {
+  this->busy_.store(true);
+  this->drain_last_activity_ms_ = millis();
+  const bool submitted = this->transfer_in(
+      ENDPOINT_IN, [this, session](const usb_host::TransferStatus &status) { this->on_drain_done_(session, status); },
+      REPORT_SIZE);
+  if (!submitted)
+    this->busy_.store(false);
+  return submitted;
+}
+
+// USB task context.
+void FT0203Hub::on_drain_done_(uint32_t session, const usb_host::TransferStatus &status) {
+  if (session != this->session_.load())
+    return;
+  this->result_.store(status.success ? Result::DRAIN_REPORT : Result::DRAIN_DONE, std::memory_order_release);
+  this->enable_loop_soon_any_context();
+  App.wake_loop_threadsafe();
+}
+
+void FT0203Hub::handle_drain_result_(Result result) {
+  this->busy_.store(false);
+  if (result == Result::DRAIN_DONE) {
+    ESP_LOGD(TAG, "USB input queue idle after %u pending report(s)", this->drained_reports_);
+    this->draining_ = false;
+    return;
+  }
+
+  this->drained_reports_++;
+  this->drain_last_activity_ms_ = millis();
+  if (this->drained_reports_ >= MAX_DRAIN_REPORTS) {
+    ESP_LOGW(TAG, "Drained %u pending USB reports; proceeding to device info", this->drained_reports_);
+    this->draining_ = false;
+    return;
+  }
+  if (!this->submit_drain_read_(this->session_.load())) {
+    ESP_LOGW(TAG, "Could not continue draining USB reports; proceeding to device info");
+    this->draining_ = false;
+  }
+}
+
+void FT0203Hub::end_drain_(bool cancel_pending) {
+  if (cancel_pending) {
+    // Invalidate the outstanding IN callback before cancelling its transfer.
+    this->session_.fetch_add(1);
+    this->result_.store(Result::NONE, std::memory_order_release);
+    this->busy_.store(false);
+    usb_host_endpoint_halt(this->device_handle_, ENDPOINT_IN);
+    usb_host_endpoint_flush(this->device_handle_, ENDPOINT_IN);
+    usb_host_endpoint_clear(this->device_handle_, ENDPOINT_IN);
+  }
+  ESP_LOGD(TAG, "USB input queue idle after %u pending report(s)", this->drained_reports_);
+  this->draining_ = false;
 }
 
 // USB task context.
@@ -243,13 +322,14 @@ void FT0203Hub::handle_result_(Result result) {
     const uint8_t *packet = this->assembler_.data();
     const size_t length = this->assembler_.length();
     if (this->command_ == COMMAND_INFO) {
-      ESP_LOGD(TAG, "Device info: %s", format_hex_pretty(packet, length).c_str());
-      if (length > MODEL_BYTE_INDEX && packet[MODEL_BYTE_INDEX] != SUPPORTED_MODEL) {
-        ESP_LOGW(TAG, "Unrecognised model byte 0x%02x (expected 0x%02x); readings may be wrong",
-                 packet[MODEL_BYTE_INDEX], SUPPORTED_MODEL);
+      if (length != DEVICE_INFO_PACKET_LENGTH || packet[MODEL_BYTE_INDEX] != SUPPORTED_MODEL) {
+        ESP_LOGW(TAG, "Unexpected device-info packet (%u bytes): %s", static_cast<unsigned>(length),
+                 format_hex_pretty(packet, length).c_str());
+      } else {
+        ESP_LOGD(TAG, "Device info: %s", format_hex_pretty(packet, length).c_str());
+        this->info_done_ = true;
+        ok = true;
       }
-      this->info_done_ = true;
-      ok = true;
     } else {
       Reading reading;
       if (decode_current(packet, length, reading)) {
@@ -258,7 +338,8 @@ void FT0203Hub::handle_result_(Result result) {
         this->set_responding_(true);
         ok = true;
       } else {
-        ESP_LOGW(TAG, "Unexpected current-record packet (%u bytes)", static_cast<unsigned>(length));
+        ESP_LOGW(TAG, "Unexpected current-record packet (%u bytes): %s", static_cast<unsigned>(length),
+                 format_hex_pretty(packet, length).c_str());
       }
     }
   }

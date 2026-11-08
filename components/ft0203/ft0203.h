@@ -79,12 +79,16 @@ class FT0203Hub : public usb_host::USBClient {
   void set_connected_binary_sensor(binary_sensor::BinarySensor *sensor) { this->connected_ = sensor; }
 
  protected:
-  enum class Result : uint8_t { NONE, PACKET, FAILED };
+  enum class Result : uint8_t { NONE, PACKET, FAILED, DRAIN_REPORT, DRAIN_DONE };
 
   void on_connected() override;
   void on_disconnected() override;
 
   bool start_exchange_(uint8_t command);
+  bool submit_drain_read_(uint32_t session);
+  void on_drain_done_(uint32_t session, const usb_host::TransferStatus &status);
+  void handle_drain_result_(Result result);
+  void end_drain_(bool cancel_pending);
   void finish_exchange_(Result result);
   void on_out_done_(uint32_t session, const usb_host::TransferStatus &status);
   void on_in_done_(uint32_t session, const usb_host::TransferStatus &status);
@@ -101,17 +105,20 @@ class FT0203Hub : public usb_host::USBClient {
   uint32_t interval_ms_{16000};
   uint32_t last_poll_ms_{0};
   uint32_t exchange_started_ms_{0};
+  uint32_t drain_last_activity_ms_{0};
   uint32_t not_before_ms_{0};
   std::atomic<uint32_t> session_{0};
   std::atomic<bool> busy_{false};
   std::atomic<Result> result_{Result::NONE};
   uint8_t command_{0};
   uint8_t failures_{0};
+  uint8_t drained_reports_{0};
   uint8_t last_sensor_mask_{0};
   bool claimed_{false};
   bool info_done_{false};
   bool polled_{false};
   bool recovering_{false};
+  bool draining_{false};
   bool responding_{false};
   bool responding_known_{false};
 };
